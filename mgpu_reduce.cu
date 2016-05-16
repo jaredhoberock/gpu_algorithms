@@ -1,9 +1,9 @@
 #include <moderngpu/transform.hxx>   // for cta_launch.
 #include <moderngpu/memory.hxx>      // for mem_t.
 #include <moderngpu/cta_reduce.hxx>
+#include "measure_bandwidth_of_invocation.hpp"
 #include <cstdio>
 #include <iostream>
-#include <time_invocation.hpp>
 
 using namespace mgpu;
 
@@ -56,11 +56,6 @@ void reduce(input_it input, int count, output_it reduction, op_t op,
       context);
 }
 
-void test(const int* input, int count, int* reduction, plus_t<int> op, context_t& context)
-{
-  reduce(input, count, reduction, op, context);
-}
-
 int main(int argc, char** argv)
 {
   standard_context_t context;
@@ -77,7 +72,7 @@ int main(int argc, char** argv)
 
   // Call our simple reduce.
   mem_t<int> output_device(1, context);
-  test(input_device.data(), input_device.size(), output_device.data(), plus_t<int>(), context);
+  reduce(input_device.data(), input_device.size(), output_device.data(), plus_t<int>(), context);
 
   // Get the reduction.
   std::vector<int> output_host = from_mem(output_device);
@@ -85,9 +80,12 @@ int main(int argc, char** argv)
   // compare to reference
   assert(std::accumulate(input_host.begin(), input_host.end(), 0, std::plus<int>()) == output_host[0]);
 
-  auto msecs = time_invocation_in_milliseconds(100, test, input_device.data(), input_device.size(), output_device.data(), plus_t<int>(), context);
+  auto bandwidth = measure_bandwidth_of_invocation_in_gigabytes_per_second(100, sizeof(int) * n, [&]
+  {
+    reduce(input_device.data(), input_device.size(), output_device.data(), plus_t<int>(), context);
+  });
 
-  std::cout << "Mean msecs: " << msecs << std::endl;
+  std::cout << "Mean bandwidth: " << bandwidth << " GB/s " << std::endl;
 
   std::cout << "OK" << std::endl;
 
