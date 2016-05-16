@@ -1,9 +1,9 @@
+#include <iostream>
 #include <moderngpu/transform.hxx>   // for cta_launch.
 #include <moderngpu/memory.hxx>      // for mem_t.
 #include <moderngpu/cta_reduce.hxx>
 #include "measure_bandwidth_of_invocation.hpp"
 #include <cstdio>
-#include <iostream>
 
 using namespace mgpu;
 
