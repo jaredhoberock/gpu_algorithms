@@ -1,0 +1,12 @@
+[submodule "site_scons/site_tools"]
+	path = site_scons/site_tools
+	url = git@github.com:jaredhoberock/nvcc-scons
+[submodule "submodules/time_invocation"]
+	path = submodules/time_invocation
+	url = git@github.com:jaredhoberock/time_invocation
+[submodule "submodules/moderngpu"]
+	path = submodules/moderngpu
+	url = git@github.com:jaredhoberock/moderngpu
+[submodule "submodules/agency"]
+	path = submodules/agency
+	url = git@github.com:jaredhoberock/agency
