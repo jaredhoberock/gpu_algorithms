@@ -6,4 +6,5 @@ env.MergeFlags(['-O3', '-std=c++11', '-lstdc++', '-lpthread', '-Isubmodules/mode
 env.MergeFlags(['--expt-extended-lambda', '-arch=sm_52'])
 
 env.Program('mgpu_reduce.cu')
+env.Program('agency_mgpu_reduce.cu')
 
