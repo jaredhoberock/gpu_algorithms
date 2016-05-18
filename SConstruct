@@ -7,4 +7,5 @@ env.MergeFlags(['--expt-extended-lambda', '-arch=sm_52'])
 
 env.Program('mgpu_reduce.cu')
 env.Program('agency_mgpu_reduce.cu')
+env.Program('agency_reduce.cu')
 
