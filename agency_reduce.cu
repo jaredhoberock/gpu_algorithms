@@ -131,7 +131,7 @@ struct my_cta_reduce_t
 
   template<typename op_t = mgpu::plus_t<type_t> >
   __device__
-  type_t reduce_and_broadcast(int tid, agency::experimental::optional<type_t> partial_sum, storage_t& storage, int count = nt, op_t op = op_t()) const
+  type_t reduce(int tid, agency::experimental::optional<type_t> partial_sum, storage_t& storage, int count = nt, op_t op = op_t()) const
   {
     auto result = reduce_and_elect(tid, partial_sum, storage, count, op);
 
