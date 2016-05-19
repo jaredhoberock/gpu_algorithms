@@ -6,6 +6,7 @@
 #include <agency/experimental/strided_view.hpp>
 #include <agency/experimental/span.hpp>
 #include <agency/experimental/array.hpp>
+#include <agency/experimental/optional.hpp>
 #include <agency/cuda.hpp>
 #include "measure_bandwidth_of_invocation.hpp"
 #include "bound.hpp"
@@ -111,54 +112,14 @@ struct my_cta_reduce_t
 
   typedef mgpu::shfl_reduce_t<type_t, num_participating_agents> group_reduce_t;
 
-  // XXX this alternative seems to basically work, so we should make it work and eliminate the other one
-  //template<typename op_t = mgpu::plus_t<type_t> >
-  //__device__
-  //type_t reduce(int tid, agency::detail::optional<type_t> partial_sum, storage_t& storage, int count = nt, op_t op = op_t(), bool broadcast = true) const
-  //{
-  //  // store partial sum to storage
-  //  if(tid < count)
-  //  {
-  //    storage[tid] = *partial_sum;
-  //  }
-
-  //  using namespace agency::experimental;
-  //  auto partial_sums = span<type_t>(storage.data(), count);
-  //  __syncthreads();
-
-  //  if(tid < num_participating_agents)
-  //  {
-  //    // stride through the input and compute a partial sum per agent
-  //    auto my_partial_sums = strided(drop(partial_sums, tid), (int)num_participating_agents);
-  //    if(!my_partial_sums.empty())
-  //    {
-  //      partial_sum = ::reduce_nonempty(bound<num_sequential_sums_per_agent-1>(), my_partial_sums, op);
-  //    }
-
-  //    // Cooperative reduction.
-  //    partial_sum = group_reduce_t().reduce(tid, *partial_sum, min(count, (int)num_participating_agents), op);
-
-  //    if(broadcast) storage[tid] = *partial_sum;
-  //  }
-  //  __syncthreads();
-
-  //  if(broadcast)
-  //  {
-  //    partial_sum = storage[0];
-  //    __syncthreads();
-  //  }
-
-  //  return partial_sum;
-  //}
-
   template<typename op_t = mgpu::plus_t<type_t> >
   __device__
-  type_t reduce(int tid, type_t partial_sum, storage_t& storage, int count = nt, op_t op = op_t(), bool broadcast = true) const
+  type_t reduce(int tid, agency::experimental::optional<type_t> partial_sum, storage_t& storage, int count = nt, op_t op = op_t(), bool broadcast = true) const
   {
     // store partial sum to storage
     if(tid < count)
     {
-      storage[tid] = partial_sum;
+      storage[tid] = *partial_sum;
     }
 
     using namespace agency::experimental;
@@ -169,15 +130,13 @@ struct my_cta_reduce_t
     {
       // stride through the input and compute a partial sum per agent
       auto my_partial_sums = strided(drop(partial_sums, tid), (int)num_participating_agents);
-      if(!my_partial_sums.empty())
-      {
-        partial_sum = ::reduce_nonempty(bound<num_sequential_sums_per_agent-1>(), my_partial_sums, op);
-      }
+
+      partial_sum = ::uninitialized_reduce(bound<num_sequential_sums_per_agent>(), my_partial_sums, op);
 
       // Cooperative reduction.
-      partial_sum = group_reduce_t().reduce(tid, partial_sum, min(count, (int)num_participating_agents), op);
+      partial_sum = group_reduce_t().reduce(tid, *partial_sum, min(count, (int)num_participating_agents), op);
 
-      if(broadcast) storage[tid] = partial_sum;
+      if(broadcast) storage[tid] = *partial_sum;
     }
     __syncthreads();
 
@@ -187,7 +146,7 @@ struct my_cta_reduce_t
       __syncthreads();
     }
 
-    return partial_sum;
+    return *partial_sum;
   }
 
 #else
@@ -207,10 +166,8 @@ struct my_cta_reduce_t
     {
       // stride through the input and compute a partial sum per agent
       auto my_partial_sums = strided(drop(partial_sums, tid), (int)num_participating_agents);
-      if(!my_partial_sums.empty())
-      {
-        partial_sum = ::reduce_nonempty(bound<num_sequential_sums_per_agent-1>(), my_partial_sums, op);
-      }
+
+      partial_sum = ::uninitialized_reduce(bound<num_sequential_sums_per_agent>(), my_partial_sums, op);
 
       storage[tid] = partial_sum;
     }
@@ -284,18 +241,12 @@ void my_reduce(input_it input, int count, output_it reduction, op_t op, mgpu::co
     span<type_t> our_span(input + tile.begin, input + tile.end);
     auto my_values = strided(drop(our_span, tid), size_t(nt));
 
-    // XXX should promote optional to agency::experimental::optional because
-    //     this sort of thing will be common
-    agency::detail::optional<type_t> partial_sum;
-    if(!my_values.empty())
-    {
-      partial_sum = reduce_nonempty(bound<vt-1>(), my_values, op);
-    }
+    // we don't have an initializer for the agent's sum, so use uninitialized_reduce
+    auto partial_sum = uninitialized_reduce(bound<vt>(), my_values, op);
 
     // Reduce to a scalar per CTA.
-    // XXX what if my_values was empty? what do I use for my partial?
     int num_partials = min(tile.count(), (int)nt);
-    auto result = reduce_t().reduce(tid, partial_sum.value_or(type_t()), shared_reduce, num_partials, op, false);
+    type_t result = reduce_t().reduce(tid, partial_sum.value_or(type_t()), shared_reduce, num_partials, op, false);
 
     if(tid == 0)
     {
