@@ -106,3 +106,12 @@ enable_if_sequential_t<typename std::decay<ExecutionPolicy>::type, T>
   return init;
 }
 
+
+template<class ExecutionPolicy, class Range, class BinaryOperator>
+__host__ __device__
+agency::experimental::detail::range_value_t<typename std::decay<Range>::type>
+  reduce_nonempty(ExecutionPolicy policy, Range&& rng, BinaryOperator binary_op)
+{
+  return reduce(policy, agency::experimental::drop(std::forward<Range>(rng), 1), std::forward<Range>(rng)[0], binary_op);
+}
+
