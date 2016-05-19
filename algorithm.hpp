@@ -115,3 +115,17 @@ agency::experimental::detail::range_value_t<typename std::decay<Range>::type>
   return reduce(policy, agency::experimental::drop(std::forward<Range>(rng), 1), std::forward<Range>(rng)[0], binary_op);
 }
 
+
+template<class ExecutionPolicy, class Range, class BinaryOperator>
+__host__ __device__
+agency::experimental::optional<agency::experimental::detail::range_value_t<typename std::decay<Range>::type>>
+  uninitialized_reduce(ExecutionPolicy policy, Range&& rng, BinaryOperator binary_op)
+{
+  if(!std::forward<Range>(rng).empty())
+  {
+    return ::reduce_nonempty(policy, std::forward<Range>(rng), binary_op);
+  }
+
+  return agency::experimental::nullopt;
+}
+
