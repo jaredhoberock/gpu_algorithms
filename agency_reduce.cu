@@ -58,54 +58,199 @@ __host__ __device__ void my_iterate(func_t f)
 
 
 // Invoke unconditionally.
-template<int nt, int vt, typename func_t>
+template<int stride, int vt, typename func_t>
 __device__ void my_strided_iterate(func_t f, int tid)
 {
   my_iterate<vt>([=](int i)
   {
-    f(i, nt * i + tid);
+    f(i, stride * i + tid);
   });
 }
 
 // Check range.
-template<int nt, int vt, int vt0 = vt, typename func_t>
+template<int stride, int vt, int vt0 = vt, typename func_t>
 __device__ void my_strided_iterate(func_t f, int tid, int count)
 {
   // Unroll the first vt0 elements of each thread.
-  if(vt0 > 1 && count >= nt * vt0)
+  if(vt0 > 1 && count >= stride * vt0)
   {
-    my_strided_iterate<nt, vt0>(f, tid);    // No checking
+    my_strided_iterate<stride, vt0>(f, tid);    // No checking
   }
   else
   {
     my_iterate<vt0>([=](int i)
     {
-      int j = nt * i + tid;
+      int j = stride * i + tid;
       if(j < count) f(i, j);
     });
   }
 
   my_iterate<vt0, vt>([=](int i)
   {
-    int j = nt * i + tid;
+    int j = stride * i + tid;
     if(j < count) f(i, j);
   });
 }
 
 
-template<int nt, int vt, int vt0 = vt, typename it_t>
-__host__ __device__ mgpu::array_t<typename std::iterator_traits<it_t>::value_type, vt> 
-my_mem_to_reg_strided(it_t mem, int tid, int count)
+template<int nt, typename type_t>
+struct my_cta_reduce_t
 {
-  typedef typename std::iterator_traits<it_t>::value_type type_t;
-  mgpu::array_t<type_t, vt> x;
-  my_strided_iterate<nt, vt, vt0>([&](int i, int j)
+  enum
   { 
-    x[i] = mem[j]; 
-  }, tid, count);
+    num_participating_agents = mgpu::min(nt, (int)mgpu::warp_size), 
+    num_passes = mgpu::s_log2(num_participating_agents),
+    num_sequential_sums_per_agent = nt / num_participating_agents 
+  };
 
-  return x;
-}
+  static_assert(0 == nt % mgpu::warp_size, "cta_reduce_t requires num threads to be a multiple of warp_size (32)");
+
+  using storage_t = agency::experimental::array<type_t, mgpu::max(nt, 2 * num_participating_agents)>;
+
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 300
+
+  typedef mgpu::shfl_reduce_t<type_t, num_participating_agents> group_reduce_t;
+
+  // XXX this alternative seems to basically work, so we should make it work and eliminate the other one
+  //template<typename op_t = mgpu::plus_t<type_t> >
+  //__device__
+  //type_t reduce(int tid, agency::detail::optional<type_t> partial_sum, storage_t& storage, int count = nt, op_t op = op_t(), bool broadcast = true) const
+  //{
+  //  // store partial sum to storage
+  //  if(tid < count)
+  //  {
+  //    storage[tid] = *partial_sum;
+  //  }
+
+  //  using namespace agency::experimental;
+  //  auto partial_sums = span<type_t>(storage.data(), count);
+  //  __syncthreads();
+
+  //  if(tid < num_participating_agents)
+  //  {
+  //    // stride through the input and compute a partial sum per agent
+  //    auto my_partial_sums = strided(drop(partial_sums, tid), (int)num_participating_agents);
+  //    if(!my_partial_sums.empty())
+  //    {
+  //      partial_sum = ::reduce_nonempty(bound<num_sequential_sums_per_agent-1>(), my_partial_sums, op);
+  //    }
+
+  //    // Cooperative reduction.
+  //    partial_sum = group_reduce_t().reduce(tid, *partial_sum, min(count, (int)num_participating_agents), op);
+
+  //    if(broadcast) storage[tid] = *partial_sum;
+  //  }
+  //  __syncthreads();
+
+  //  if(broadcast)
+  //  {
+  //    partial_sum = storage[0];
+  //    __syncthreads();
+  //  }
+
+  //  return partial_sum;
+  //}
+
+  template<typename op_t = mgpu::plus_t<type_t> >
+  __device__
+  type_t reduce(int tid, type_t partial_sum, storage_t& storage, int count = nt, op_t op = op_t(), bool broadcast = true) const
+  {
+    // store partial sum to storage
+    if(tid < count)
+    {
+      storage[tid] = partial_sum;
+    }
+
+    using namespace agency::experimental;
+    auto partial_sums = span<type_t>(storage.data(), count);
+    __syncthreads();
+
+    if(tid < num_participating_agents)
+    {
+      // stride through the input and compute a partial sum per agent
+      auto my_partial_sums = strided(drop(partial_sums, tid), (int)num_participating_agents);
+      if(!my_partial_sums.empty())
+      {
+        partial_sum = ::reduce_nonempty(bound<num_sequential_sums_per_agent-1>(), my_partial_sums, op);
+      }
+
+      // Cooperative reduction.
+      partial_sum = group_reduce_t().reduce(tid, partial_sum, min(count, (int)num_participating_agents), op);
+
+      if(broadcast) storage[tid] = partial_sum;
+    }
+    __syncthreads();
+
+    if(broadcast)
+    {
+      partial_sum = storage[0];
+      __syncthreads();
+    }
+
+    return partial_sum;
+  }
+
+#else
+
+  template<typename op_t = mgpu::plus_t<type_t> >
+  __device__
+  type_t reduce(int tid, type_t partial_sum, storage_t& storage, int count = nt, op_t op = op_t(), bool broadcast = true) const
+  {
+    // store partial sum to storage
+    storage[tid] = partial_sum;
+
+    using namespace agency::experimental;
+    auto partial_sums = span<type_t>(storage.data(), count);
+    __syncthreads();
+
+    if(tid < num_participating_agents)
+    {
+      // stride through the input and compute a partial sum per agent
+      auto my_partial_sums = strided(drop(partial_sums, tid), (int)num_participating_agents);
+      if(!my_partial_sums.empty())
+      {
+        partial_sum = ::reduce_nonempty(bound<num_sequential_sums_per_agent-1>(), my_partial_sums, op);
+      }
+
+      storage[tid] = partial_sum;
+    }
+    __syncthreads();
+
+    int count2 = min(count, int(num_participating_agents));
+    int first = (1 & num_passes) ? num_participating_agents : 0;
+    if(tid < num_participating_agents)
+    {
+      storage[first + tid] = partial_sum;
+    }
+    __syncthreads();
+
+    mgpu::iterate<num_passes>([&](int pass)
+    {
+      if(tid < num_participating_agents)
+      {
+        int offset = 1 << pass;
+        if(tid + offset < count2) 
+        {
+          partial_sum = op(partial_sum, storage[first + offset + tid]);
+        }
+
+        first = num_participating_agents - first;
+        storage[first + tid] = partial_sum;
+      }
+      __syncthreads();
+    });
+
+    if(broadcast)
+    {
+      partial_sum = storage[0];
+      __syncthreads();
+    }
+
+    return partial_sum;
+  }
+
+#endif
+};
 
 
 template<typename launch_arg_t = mgpu::empty_t, typename input_it,  typename output_it, typename op_t>
@@ -129,7 +274,7 @@ void my_reduce(input_it input, int count, output_it reduction, op_t op, mgpu::co
   {
     typedef typename launch_t::sm_ptx params_t;
     enum { nt = params_t::nt, vt = params_t::vt, nv = nt * vt };
-    typedef cta_reduce_t<nt, type_t> reduce_t;
+    typedef my_cta_reduce_t<nt, type_t> reduce_t;
     __shared__ typename reduce_t::storage_t shared_reduce;
 
     // Load the data for the first tile for each cta.
@@ -139,18 +284,18 @@ void my_reduce(input_it input, int count, output_it reduction, op_t op, mgpu::co
     span<type_t> our_span(input + tile.begin, input + tile.end);
     auto my_values = strided(drop(our_span, tid), size_t(nt));
 
-    // XXX use optional here?
-    type_t partial_sum;
+    // XXX should promote optional to agency::experimental::optional because
+    //     this sort of thing will be common
+    agency::detail::optional<type_t> partial_sum;
     if(!my_values.empty())
     {
-      type_t init = my_values[0];
-      partial_sum = reduce(bound<vt-1>(), drop(my_values, 1), init, op);
+      partial_sum = reduce_nonempty(bound<vt-1>(), my_values, op);
     }
 
     // Reduce to a scalar per CTA.
     // XXX what if my_values was empty? what do I use for my partial?
     int num_partials = min(tile.count(), (int)nt);
-    auto result = reduce_t().reduce(tid, partial_sum, shared_reduce, num_partials, op, false);
+    auto result = reduce_t().reduce(tid, partial_sum.value_or(type_t()), shared_reduce, num_partials, op, false);
 
     if(tid == 0)
     {
@@ -177,7 +322,7 @@ int main(int argc, char** argv)
 
   standard_context_t context;
 
-  size_t n = 1 << 30;
+  size_t n = (1 << 30) + 13;
 
   // Prepare the fibonacci numbers on the host.
   std::vector<int> input_host(n);
