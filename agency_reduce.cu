@@ -22,78 +22,6 @@ auto grid(int num_blocks, int num_threads) ->
 using grid_agent = agency::parallel_group<agency::cuda::concurrent_agent>;
 
 
-template<size_t i, size_t count, bool valid = (i < count)>
-struct my_iterate_t
-{
-  #pragma nv_exec_check_disable
-  template<typename func_t>
-  __host__ __device__ static void eval(func_t f)
-  {
-    f(i);
-    my_iterate_t<i + 1, count>::eval(f);
-  }
-};
-
-template<size_t i, size_t count>
-struct my_iterate_t<i, count, false>
-{
-  template<typename func_t>
-  __host__ __device__ static void eval(func_t f) { }
-};
-
-template<size_t begin, size_t end, typename func_t>
-__host__ __device__ void my_iterate(func_t f)
-{
-  my_iterate_t<begin, end>::eval(f);
-}
-
-template<size_t count, typename func_t>
-__host__ __device__ void my_iterate(func_t f)
-{
-//  unrolling_executor<count> exec;
-//
-//  exec.execute(f, count);
-
-  my_iterate_t<0, count>::eval(f);
-}
-
-
-// Invoke unconditionally.
-template<int stride, int vt, typename func_t>
-__device__ void my_strided_iterate(func_t f, int tid)
-{
-  my_iterate<vt>([=](int i)
-  {
-    f(i, stride * i + tid);
-  });
-}
-
-// Check range.
-template<int stride, int vt, int vt0 = vt, typename func_t>
-__device__ void my_strided_iterate(func_t f, int tid, int count)
-{
-  // Unroll the first vt0 elements of each thread.
-  if(vt0 > 1 && count >= stride * vt0)
-  {
-    my_strided_iterate<stride, vt0>(f, tid);    // No checking
-  }
-  else
-  {
-    my_iterate<vt0>([=](int i)
-    {
-      int j = stride * i + tid;
-      if(j < count) f(i, j);
-    });
-  }
-
-  my_iterate<vt0, vt>([=](int i)
-  {
-    int j = stride * i + tid;
-    if(j < count) f(i, j);
-  });
-}
-
-
 template<int nt, typename type_t>
 struct my_cta_reduce_t
 {
@@ -112,6 +40,7 @@ struct my_cta_reduce_t
 
   typedef mgpu::shfl_reduce_t<type_t, num_participating_agents> group_reduce_t;
 
+  // XXX should have reduce() and reduce_and_broadcast()
   template<typename op_t = mgpu::plus_t<type_t> >
   __device__
   type_t reduce(int tid, agency::experimental::optional<type_t> partial_sum, storage_t& storage, int count = nt, op_t op = op_t(), bool broadcast = true) const
