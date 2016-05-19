@@ -40,10 +40,9 @@ struct my_cta_reduce_t
 
   typedef mgpu::shfl_reduce_t<type_t, num_participating_agents> group_reduce_t;
 
-  // XXX should have reduce() and reduce_and_broadcast()
   template<typename op_t = mgpu::plus_t<type_t> >
   __device__
-  type_t reduce(int tid, agency::experimental::optional<type_t> partial_sum, storage_t& storage, int count = nt, op_t op = op_t(), bool broadcast = true) const
+  agency::experimental::optional<type_t> reduce_and_elect(int tid, agency::experimental::optional<type_t> partial_sum, storage_t& storage, int count = nt, op_t op = op_t()) const
   {
     // store partial sum to storage
     if(tid < count)
@@ -64,28 +63,23 @@ struct my_cta_reduce_t
 
       // Cooperative reduction.
       partial_sum = group_reduce_t().reduce(tid, *partial_sum, min(count, (int)num_participating_agents), op);
-
-      if(broadcast) storage[tid] = *partial_sum;
     }
     __syncthreads();
 
-    if(broadcast)
-    {
-      partial_sum = storage[0];
-      __syncthreads();
-    }
-
-    return *partial_sum;
+    return tid == 0 ? partial_sum : agency::experimental::nullopt;
   }
 
 #else
 
   template<typename op_t = mgpu::plus_t<type_t> >
   __device__
-  type_t reduce(int tid, type_t partial_sum, storage_t& storage, int count = nt, op_t op = op_t(), bool broadcast = true) const
+  agency::experimental::optional<type_t> reduce_and_elect(int tid, agency::experimental::optional<type_t> partial_sum, storage_t& storage, int count = nt, op_t op = op_t(), bool broadcast = true) const
   {
     // store partial sum to storage
-    storage[tid] = partial_sum;
+    if(tid < count)
+    {
+      storage[tid] = *partial_sum;
+    }
 
     using namespace agency::experimental;
     auto partial_sums = span<type_t>(storage.data(), count);
@@ -98,44 +92,60 @@ struct my_cta_reduce_t
 
       partial_sum = ::uninitialized_reduce(bound<num_sequential_sums_per_agent>(), my_partial_sums, op);
 
-      storage[tid] = partial_sum;
+      if(partial_sum)
+      {
+        storage[tid] = *partial_sum;
+      }
     }
     __syncthreads();
 
     int count2 = min(count, int(num_participating_agents));
     int first = (1 & num_passes) ? num_participating_agents : 0;
-    if(tid < num_participating_agents)
+    if(tid < num_participating_agents && partial_sum)
     {
-      storage[first + tid] = partial_sum;
+      storage[first + tid] = *partial_sum;
     }
     __syncthreads();
 
-    mgpu::iterate<num_passes>([&](int pass)
+
+    int offset = 1;
+    for(int pass = 0; pass < num_passes; ++pass, offset *= 2)
     {
       if(tid < num_participating_agents)
       {
-        int offset = 1 << pass;
         if(tid + offset < count2) 
         {
-          partial_sum = op(partial_sum, storage[first + offset + tid]);
+          partial_sum = op(*partial_sum, storage[first + offset + tid]);
         }
 
         first = num_participating_agents - first;
-        storage[first + tid] = partial_sum;
+        storage[first + tid] = *partial_sum;
       }
-      __syncthreads();
-    });
-
-    if(broadcast)
-    {
-      partial_sum = storage[0];
       __syncthreads();
     }
 
-    return partial_sum;
+    return tid == 0 ? partial_sum : agency::experimental::nullopt;
   }
 
 #endif
+
+  template<typename op_t = mgpu::plus_t<type_t> >
+  __device__
+  type_t reduce_and_broadcast(int tid, agency::experimental::optional<type_t> partial_sum, storage_t& storage, int count = nt, op_t op = op_t()) const
+  {
+    auto result = reduce_and_elect(tid, partial_sum, storage, count, op);
+
+    // XXX we're using inside knowledge that reduce_and_elect() always elects tid == 0
+    if(tid == 0)
+    {
+      storage[0] = *result;
+    }
+
+    __syncthreads();
+
+    return storage[0];
+  }
+
 };
 
 
@@ -175,12 +185,12 @@ void my_reduce(input_it input, int count, output_it reduction, op_t op, mgpu::co
 
     // Reduce to a scalar per CTA.
     int num_partials = min(tile.count(), (int)nt);
-    type_t result = reduce_t().reduce(tid, partial_sum.value_or(type_t()), shared_reduce, num_partials, op, false);
+    auto result = reduce_t().reduce_and_elect(tid, partial_sum, shared_reduce, num_partials, op);
 
-    if(tid == 0)
+    if(result)
     {
-      if(1 == num_ctas) *reduction = result;
-      else partials_data[cta] = result;
+      if(1 == num_ctas) *reduction = *result;
+      else partials_data[cta] = *result;
     }
   };
 
