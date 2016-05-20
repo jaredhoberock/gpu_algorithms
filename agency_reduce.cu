@@ -26,7 +26,7 @@ using grid_agent = agency::parallel_group<agency::cuda::concurrent_agent>;
 // XXX if we destroy x and properly construct the result, how correct does that make it?
 template<class T>
 __device__
-T shuffle_down(const T& x, int offset, int width = mgpu::warp_size)
+T shuffle_down(const T& x, int offset, int width)
 { 
   constexpr std::size_t num_words = mgpu::div_up(sizeof(T), sizeof(int));
 
@@ -48,7 +48,7 @@ T shuffle_down(const T& x, int offset, int width = mgpu::warp_size)
 
 template<class T>
 __device__
-agency::experimental::optional<T> optionally_shuffle_down(const agency::experimental::optional<T>& x, int offset, int width = mgpu::warp_size)
+agency::experimental::optional<T> optionally_shuffle_down(const agency::experimental::optional<T>& x, int offset, int width)
 {
   constexpr std::size_t num_words = mgpu::div_up(sizeof(T), sizeof(int));
 
@@ -87,7 +87,7 @@ struct warp_reducing_barrier
 
   template<typename BinaryOperation>
   __device__
-  agency::experimental::optional<T> reduce_and_elect_and_wait(int lane, agency::experimental::optional<T> x, int count, BinaryOperation binary_op) const
+  agency::experimental::optional<T> reduce_and_wait_and_elect(int lane, agency::experimental::optional<T> x, int count, BinaryOperation binary_op) const
   {
     if(count == num_threads)
     { 
@@ -129,7 +129,7 @@ class reducing_barrier
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 300
     template<class BinaryOperation>
     __device__
-    agency::experimental::optional<T> reduce_and_elect_and_wait(int agent_rank, const agency::experimental::optional<T>& value, int count, BinaryOperation binary_op)
+    agency::experimental::optional<T> reduce_and_wait_and_elect(int agent_rank, const agency::experimental::optional<T>& value, int count, BinaryOperation binary_op)
     {
       auto partial_sum = value;
 
@@ -151,7 +151,7 @@ class reducing_barrier
         partial_sum = ::uninitialized_reduce(bound<num_sequential_sums_per_agent>(), my_partial_sums, binary_op);
 
         // reduce across the warp
-        partial_sum = warp_barrier_.reduce_and_elect_and_wait(agent_rank, partial_sum, min(count, (int)num_participating_agents), binary_op);
+        partial_sum = warp_barrier_.reduce_and_wait_and_elect(agent_rank, partial_sum, min(count, (int)num_participating_agents), binary_op);
       }
       __syncthreads();
 
@@ -162,7 +162,7 @@ class reducing_barrier
 
     template<class BinaryOperation>
     __device__
-    agency::experimental::optional<T> reduce_and_elect_and_wait(int agent_rank, const agency::experimental::optional<T>& value, int count, BinaryOperation binary_op)
+    agency::experimental::optional<T> reduce_and_wait_and_elect(int agent_rank, const agency::experimental::optional<T>& value, int count, BinaryOperation binary_op)
     {
       auto partial_sum = value;
 
@@ -224,7 +224,7 @@ class reducing_barrier
     __device__
     T reduce_and_wait(int agent_rank, const agency::experimental::optional<T>& value, int count, BinaryOperation binary_op) const
     {
-      auto result = reduce_and_elect(agent_rank, value, count, binary_op);
+      auto result = reduce_and_wait_and_elect(agent_rank, value, count, binary_op);
 
       // XXX we're using inside knowledge that reduce_and_elect() always elects agent_rank == 0
       if(agent_rank == 0)
@@ -293,7 +293,7 @@ void my_reduce(input_it input, int count, output_it reduction, op_t op, mgpu::co
     int num_partials = min(tile.count(), (int)num_threads);
 
     __shared__ reducing_barrier<T, num_threads> barrier;
-    auto result = barrier.reduce_and_elect_and_wait(agent_idx, partial_sum, num_partials, op);
+    auto result = barrier.reduce_and_wait_and_elect(agent_idx, partial_sum, num_partials, op);
 
     if(result)
     {
