@@ -26,23 +26,53 @@ using grid_agent = agency::parallel_group<agency::cuda::concurrent_agent>;
 // XXX if we destroy x and properly construct the result, how correct does that make it?
 template<class T>
 __device__
-T my_shfl_down(const T& x, int offset, int width = mgpu::warp_size)
+T shuffle_down(const T& x, int offset, int width = mgpu::warp_size)
 { 
-  enum { num_words = mgpu::div_up(sizeof(T), sizeof(int)) };
+  constexpr std::size_t num_words = mgpu::div_up(sizeof(T), sizeof(int));
 
   union
   {
-    int x[num_words];
-    T t;
+    int words[num_words];
+    T value;
   } u;
-  u.t = x;
+  u.value = x;
 
   for(int i = 0; i < num_words; ++i)
   {
-    u.x[i] = __shfl_down(u.x[i], offset, width);
+    u.words[i] = __shfl_down(u.words[i], offset, width);
   }
 
-  return u.t;
+  return u.value;
+}
+
+
+template<class T>
+__device__
+agency::experimental::optional<T> optionally_shuffle_down(const agency::experimental::optional<T>& x, int offset, int width = mgpu::warp_size)
+{
+  constexpr std::size_t num_words = mgpu::div_up(sizeof(T), sizeof(int));
+
+  union
+  {
+    int words[num_words];
+    T value;
+  } u;
+
+  if(x)
+  {
+    u.value = *x;
+  }
+
+  for(int i = 0; i < num_words; ++i)
+  {
+    u.words[i] = __shfl_down(u.words[i], offset, width);
+  }
+
+  // communicate whether or not the words we shuffled came from a valid object
+  bool is_valid = x ? true : false;
+  is_valid = __shfl_down(is_valid, offset, width);
+
+  return is_valid ? agency::experimental::make_optional(u.value) : agency::experimental::nullopt;
 }
 
 
@@ -57,15 +87,15 @@ struct warp_reducing_barrier
 
   template<typename BinaryOperation>
   __device__
-  agency::experimental::optional<T> reduce_and_elect_and_wait(int lane, T x, int count, BinaryOperation binary_op) const
+  agency::experimental::optional<T> reduce_and_elect_and_wait(int lane, agency::experimental::optional<T> x, int count, BinaryOperation binary_op) const
   {
     if(count == num_threads)
     { 
       for(int pass = 0; pass < mgpu::s_log2(num_threads); ++pass)
       {
         int offset = 1 << pass;
-        auto y = my_shfl_down(x, offset, num_threads);
-        x = binary_op(x, y);
+        auto y = shuffle_down(*x, offset, num_threads);
+        x = binary_op(*x, y);
       }
     }
     else
@@ -73,12 +103,12 @@ struct warp_reducing_barrier
       for(int pass = 0; pass < mgpu::s_log2(num_threads); ++pass)
       {
         int offset = 1 << pass;
-        auto y = my_shfl_down(x, offset, num_threads);
-        if(lane + offset < count) x = binary_op(x, y);
+        auto y = optionally_shuffle_down(x, offset, num_threads);
+        if((lane + offset < count) && y) *x = binary_op(*x, *y);
       }
     }
 
-    return (lane == 0) ? agency::experimental::make_optional(x) : agency::experimental::nullopt;
+    return (lane == 0) ? x : agency::experimental::nullopt;
   }
 };
 
@@ -121,7 +151,7 @@ class reducing_barrier
         partial_sum = ::uninitialized_reduce(bound<num_sequential_sums_per_agent>(), my_partial_sums, binary_op);
 
         // reduce across the warp
-        partial_sum = warp_barrier_.reduce_and_elect_and_wait(agent_rank, *partial_sum, min(count, (int)num_participating_agents), binary_op);
+        partial_sum = warp_barrier_.reduce_and_elect_and_wait(agent_rank, partial_sum, min(count, (int)num_participating_agents), binary_op);
       }
       __syncthreads();
 
