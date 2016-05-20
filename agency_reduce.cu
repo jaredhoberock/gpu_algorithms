@@ -23,8 +23,8 @@ auto grid(int num_blocks, int num_threads) ->
 using grid_agent = agency::parallel_group<agency::cuda::concurrent_agent>;
 
 
-template<typename launch_arg_t = mgpu::empty_t, typename input_it,  typename output_it, typename op_t>
-void my_reduce(input_it input, int count, output_it reduction, op_t op, mgpu::context_t& context)
+template<typename launch_arg_t = mgpu::empty_t, typename input_it,  typename output_it, class BinaryOperation>
+void my_reduce(input_it input, int count, output_it reduction, BinaryOperation binary_op, mgpu::context_t& context)
 {
   using namespace mgpu;
   using namespace agency::experimental;
@@ -56,13 +56,13 @@ void my_reduce(input_it input, int count, output_it reduction, op_t op, mgpu::co
     auto my_values = strided(drop(our_span, agent_idx), size_t(num_threads));
 
     // we don't have an initializer for the agent's sum, so use uninitialized_reduce
-    auto partial_sum = uninitialized_reduce(bound<grainsize>(), my_values, op);
+    auto partial_sum = uninitialized_reduce(bound<grainsize>(), my_values, binary_op);
 
     // Reduce to a scalar per CTA.
     int num_partials = min(tile.count(), (int)num_threads);
 
     __shared__ reducing_barrier<T, num_threads> barrier;
-    auto result = barrier.reduce_and_wait_and_elect(agent_idx, partial_sum, num_partials, op);
+    auto result = barrier.reduce_and_wait_and_elect(agent_idx, partial_sum, num_partials, binary_op);
 
     if(result)
     {
@@ -85,7 +85,7 @@ void my_reduce(input_it input, int count, output_it reduction, op_t op, mgpu::co
   // Recursively call reduce until there's just one scalar.
   if(num_ctas > 1)
   {
-    my_reduce<launch_params_t<512, 4> >(partials_data, num_ctas, reduction, op, context);
+    my_reduce<launch_params_t<512, 4> >(partials_data, num_ctas, reduction, binary_op, context);
   }
 }
 
