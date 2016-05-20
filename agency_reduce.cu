@@ -22,130 +22,205 @@ auto grid(int num_blocks, int num_threads) ->
 using grid_agent = agency::parallel_group<agency::cuda::concurrent_agent>;
 
 
-template<int nt, typename type_t>
-struct my_cta_reduce_t
+// XXX seems like this is really only valid for POD
+// XXX if we destroy x and properly construct the result, how correct does that make it?
+template<class T>
+__device__
+T my_shfl_down(const T& x, int offset, int width = mgpu::warp_size)
+{ 
+  enum { num_words = mgpu::div_up(sizeof(T), sizeof(int)) };
+
+  union
+  {
+    int x[num_words];
+    T t;
+  } u;
+  u.t = x;
+
+  for(int i = 0; i < num_words; ++i)
+  {
+    u.x[i] = __shfl_down(u.x[i], offset, width);
+  }
+
+  return u.t;
+}
+
+
+
+// requires __CUDA_ARCH__ >= 300.
+// num_threads can be any power-of-two <= warp_size.
+// warp_reduce_t returns the reduction only in lane 0.
+template<class T, int num_threads>
+struct warp_reducing_barrier
 {
-  enum
-  { 
-    num_participating_agents = mgpu::min(nt, (int)mgpu::warp_size), 
-    num_passes = mgpu::s_log2(num_participating_agents),
-    num_sequential_sums_per_agent = nt / num_participating_agents 
-  };
+  static_assert(num_threads <= mgpu::warp_size && mgpu::is_pow2(num_threads), "shfl_reduce_t must operate on a pow2 number of threads <= warp_size (32)");
 
-  static_assert(0 == nt % mgpu::warp_size, "cta_reduce_t requires num threads to be a multiple of warp_size (32)");
+  template<typename BinaryOperation>
+  __device__
+  agency::experimental::optional<T> reduce_and_elect_and_wait(int lane, T x, int count, BinaryOperation binary_op) const
+  {
+    if(count == num_threads)
+    { 
+      for(int pass = 0; pass < mgpu::s_log2(num_threads); ++pass)
+      {
+        int offset = 1 << pass;
+        auto y = my_shfl_down(x, offset, num_threads);
+        x = binary_op(x, y);
+      }
+    }
+    else
+    {
+      for(int pass = 0; pass < mgpu::s_log2(num_threads); ++pass)
+      {
+        int offset = 1 << pass;
+        auto y = my_shfl_down(x, offset, num_threads);
+        if(lane + offset < count) x = binary_op(x, y);
+      }
+    }
 
-  using storage_t = agency::experimental::array<type_t, mgpu::max(nt, 2 * num_participating_agents)>;
+    return (lane == 0) ? agency::experimental::make_optional(x) : agency::experimental::nullopt;
+  }
+};
+
+
+template<class T, int num_agents>
+class reducing_barrier
+{
+  public:
+    static_assert(0 == num_agents % mgpu::warp_size, "num_agents must be a multiple of warp_size (32)");
+   
+    __device__
+    reducing_barrier() = default;
+
+    reducing_barrier(const reducing_barrier&) = delete;
+
+    reducing_barrier(reducing_barrier&&) = delete;
 
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 300
-
-  typedef mgpu::shfl_reduce_t<type_t, num_participating_agents> group_reduce_t;
-
-  template<typename op_t = mgpu::plus_t<type_t> >
-  __device__
-  agency::experimental::optional<type_t> reduce_and_elect(int tid, agency::experimental::optional<type_t> partial_sum, storage_t& storage, int count = nt, op_t op = op_t()) const
-  {
-    // store partial sum to storage
-    if(tid < count)
+    template<class BinaryOperation>
+    __device__
+    agency::experimental::optional<T> reduce_and_elect_and_wait(int agent_rank, const agency::experimental::optional<T>& value, int count, BinaryOperation binary_op)
     {
-      storage[tid] = *partial_sum;
+      auto partial_sum = value;
+
+      // store partial sum to storage
+      if(agent_rank < count)
+      {
+        storage_[agent_rank] = *partial_sum;
+      }
+
+      using namespace agency::experimental;
+      auto partial_sums = span<T>(storage_.data(), count);
+      __syncthreads();
+
+      if(agent_rank < num_participating_agents)
+      {
+        // stride through the input and compute a partial sum per agent
+        auto my_partial_sums = strided(drop(partial_sums, agent_rank), (int)num_participating_agents);
+
+        partial_sum = ::uninitialized_reduce(bound<num_sequential_sums_per_agent>(), my_partial_sums, binary_op);
+
+        // reduce across the warp
+        partial_sum = warp_barrier_.reduce_and_elect_and_wait(agent_rank, *partial_sum, min(count, (int)num_participating_agents), binary_op);
+      }
+      __syncthreads();
+
+      return agent_rank == 0 ? partial_sum : agency::experimental::nullopt;
     }
-
-    using namespace agency::experimental;
-    auto partial_sums = span<type_t>(storage.data(), count);
-    __syncthreads();
-
-    if(tid < num_participating_agents)
-    {
-      // stride through the input and compute a partial sum per agent
-      auto my_partial_sums = strided(drop(partial_sums, tid), (int)num_participating_agents);
-
-      partial_sum = ::uninitialized_reduce(bound<num_sequential_sums_per_agent>(), my_partial_sums, op);
-
-      // Cooperative reduction.
-      partial_sum = group_reduce_t().reduce(tid, *partial_sum, min(count, (int)num_participating_agents), op);
-    }
-    __syncthreads();
-
-    return tid == 0 ? partial_sum : agency::experimental::nullopt;
-  }
 
 #else
 
-  template<typename op_t = mgpu::plus_t<type_t> >
-  __device__
-  agency::experimental::optional<type_t> reduce_and_elect(int tid, agency::experimental::optional<type_t> partial_sum, storage_t& storage, int count = nt, op_t op = op_t(), bool broadcast = true) const
-  {
-    // store partial sum to storage
-    if(tid < count)
+    template<class BinaryOperation>
+    __device__
+    agency::experimental::optional<T> reduce_and_elect_and_wait(int agent_rank, const agency::experimental::optional<T>& value, int count, BinaryOperation binary_op)
     {
-      storage[tid] = *partial_sum;
-    }
+      auto partial_sum = value;
 
-    using namespace agency::experimental;
-    auto partial_sums = span<type_t>(storage.data(), count);
-    __syncthreads();
-
-    if(tid < num_participating_agents)
-    {
-      // stride through the input and compute a partial sum per agent
-      auto my_partial_sums = strided(drop(partial_sums, tid), (int)num_participating_agents);
-
-      partial_sum = ::uninitialized_reduce(bound<num_sequential_sums_per_agent>(), my_partial_sums, op);
-
-      if(partial_sum)
+      // store partial sum to storage
+      if(agent_rank < count)
       {
-        storage[tid] = *partial_sum;
+        storage_[agent_rank] = *partial_sum;
       }
-    }
-    __syncthreads();
 
-    int count2 = min(count, int(num_participating_agents));
-    int first = (1 & num_passes) ? num_participating_agents : 0;
-    if(tid < num_participating_agents && partial_sum)
-    {
-      storage[first + tid] = *partial_sum;
-    }
-    __syncthreads();
+      using namespace agency::experimental;
+      auto partial_sums = span<T>(storage_.data(), count);
+      __syncthreads();
 
-
-    int offset = 1;
-    for(int pass = 0; pass < num_passes; ++pass, offset *= 2)
-    {
-      if(tid < num_participating_agents)
+      if(agent_rank < num_participating_agents)
       {
-        if(tid + offset < count2) 
-        {
-          partial_sum = op(*partial_sum, storage[first + offset + tid]);
-        }
+        // stride through the input and compute a partial sum per agent
+        auto my_partial_sums = strided(drop(partial_sums, agent_rank), (int)num_participating_agents);
 
-        first = num_participating_agents - first;
-        storage[first + tid] = *partial_sum;
+        partial_sum = ::uninitialized_reduce(bound<num_sequential_sums_per_agent>(), my_partial_sums, binary_op);
+
+        if(partial_sum)
+        {
+          storage_[agent_rank] = *partial_sum;
+        }
       }
       __syncthreads();
-    }
 
-    return tid == 0 ? partial_sum : agency::experimental::nullopt;
-  }
+      int count2 = min(count, int(num_participating_agents));
+      int first = (1 & num_passes) ? num_participating_agents : 0;
+      if(agent_rank < num_participating_agents && partial_sum)
+      {
+        storage_[first + agent_rank] = *partial_sum;
+      }
+      __syncthreads();
+
+
+      int offset = 1;
+      for(int pass = 0; pass < num_passes; ++pass, offset *= 2)
+      {
+        if(agent_rank < num_participating_agents)
+        {
+          if(agent_rank + offset < count2) 
+          {
+            partial_sum = binary_op(*partial_sum, storage_[first + offset + agent_rank]);
+          }
+
+          first = num_participating_agents - first;
+          storage_[first + agent_rank] = *partial_sum;
+        }
+        __syncthreads();
+      }
+
+      return agent_rank == 0 ? partial_sum : agency::experimental::nullopt;
+    }
 
 #endif
 
-  template<typename op_t = mgpu::plus_t<type_t> >
-  __device__
-  type_t reduce(int tid, agency::experimental::optional<type_t> partial_sum, storage_t& storage, int count = nt, op_t op = op_t()) const
-  {
-    auto result = reduce_and_elect(tid, partial_sum, storage, count, op);
-
-    // XXX we're using inside knowledge that reduce_and_elect() always elects tid == 0
-    if(tid == 0)
+    template<class BinaryOperation>
+    __device__
+    T reduce_and_wait(int agent_rank, const agency::experimental::optional<T>& value, int count, BinaryOperation binary_op) const
     {
-      storage[0] = *result;
+      auto result = reduce_and_elect(agent_rank, value, count, binary_op);
+
+      // XXX we're using inside knowledge that reduce_and_elect() always elects agent_rank == 0
+      if(agent_rank == 0)
+      {
+        storage_[0] = *result;
+      }
+
+      __syncthreads();
+
+      return storage_[0];
     }
 
-    __syncthreads();
+  private:
+    // XXX these should just be constexpr members, but nvcc crashes when i do that
+    enum
+    { 
+      num_participating_agents = mgpu::min(num_agents, (int)mgpu::warp_size), 
+      num_passes = mgpu::s_log2(num_participating_agents),
+      num_sequential_sums_per_agent = num_agents / num_participating_agents 
+    };
 
-    return storage[0];
-  }
+    agency::experimental::array<T, mgpu::max(num_agents, 2 * num_participating_agents)> storage_;
 
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 300
+    warp_reducing_barrier<T, num_participating_agents> warp_barrier_;
+#endif
 };
 
 
@@ -159,38 +234,47 @@ void my_reduce(input_it input, int count, output_it reduction, op_t op, mgpu::co
     launch_params_t<128, 8>
   >::type_t launch_t;
 
-  typedef typename std::iterator_traits<input_it>::value_type type_t;
+  typedef typename std::iterator_traits<input_it>::value_type T;
 
   int num_ctas = launch_t::cta_dim(context).num_ctas(count);
   int num_threads = launch_t::cta_dim(context).nt;
-  mem_t<type_t> partials(num_ctas, context);
-  type_t* partials_data = partials.data();
+  mem_t<T> partials(num_ctas, context);
+  T* partials_data = partials.data();
 
-  auto k = [=] __device__ (int tid, int cta)
+  auto k = [=] __device__ (int agent_idx, int block_idx)
   {
     typedef typename launch_t::sm_ptx params_t;
-    enum { nt = params_t::nt, vt = params_t::vt, nv = nt * vt };
-    typedef my_cta_reduce_t<nt, type_t> reduce_t;
-    __shared__ typename reduce_t::storage_t shared_reduce;
+
+    constexpr int num_threads = params_t::nt;
+    constexpr int grainsize = params_t::vt;
+    constexpr int tile_size = num_threads * grainsize;
 
     // Load the data for the first tile for each cta.
-    range_t tile = get_tile(cta, nv, count);
+    range_t tile = get_tile(block_idx, tile_size, count);
 
     // stride through the input and compute a partial sum per thread
-    span<type_t> our_span(input + tile.begin, input + tile.end);
-    auto my_values = strided(drop(our_span, tid), size_t(nt));
+    span<T> our_span(input + tile.begin, input + tile.end);
+    auto my_values = strided(drop(our_span, agent_idx), size_t(num_threads));
 
     // we don't have an initializer for the agent's sum, so use uninitialized_reduce
-    auto partial_sum = uninitialized_reduce(bound<vt>(), my_values, op);
+    auto partial_sum = uninitialized_reduce(bound<grainsize>(), my_values, op);
 
     // Reduce to a scalar per CTA.
-    int num_partials = min(tile.count(), (int)nt);
-    auto result = reduce_t().reduce_and_elect(tid, partial_sum, shared_reduce, num_partials, op);
+    int num_partials = min(tile.count(), (int)num_threads);
+
+    __shared__ reducing_barrier<T, num_threads> barrier;
+    auto result = barrier.reduce_and_elect_and_wait(agent_idx, partial_sum, num_partials, op);
 
     if(result)
     {
-      if(1 == num_ctas) *reduction = *result;
-      else partials_data[cta] = *result;
+      if(num_ctas > 1)
+      {
+        partials_data[block_idx] = *result;
+      }
+      else
+      {
+        *reduction = *result;
+      }
     }
   };
 
