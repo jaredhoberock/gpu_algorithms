@@ -40,7 +40,7 @@ void my_reduce(input_it input, int count, output_it reduction, BinaryOperation b
 
   auto input_view = span<T>(input, count);
 
-  auto k = [=] __device__ (int agent_idx, int block_idx)
+  auto k = [=] __device__ (int agent_idx, int group_idx)
   {
     typedef typename launch_t::sm_ptx params_t;
 
@@ -49,7 +49,7 @@ void my_reduce(input_it input, int count, output_it reduction, BinaryOperation b
     constexpr int tile_size  = group_size * grain_size;
 
     // find this group's chunk of the input
-    auto our_chunk = chunk(input_view, tile_size)[block_idx];
+    auto our_chunk = chunk(input_view, tile_size)[group_idx];
     
     // each agent strides through its group's chunk of the input...
     auto my_values = strided(drop(our_chunk, agent_idx), size_t(group_size));
@@ -67,7 +67,7 @@ void my_reduce(input_it input, int count, output_it reduction, BinaryOperation b
     {
       if(num_ctas > 1)
       {
-        partials_data[block_idx] = *result;
+        partials_data[group_idx] = *result;
       }
       else
       {
