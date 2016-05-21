@@ -1,6 +1,5 @@
 #include <iostream>
 #include <moderngpu/memory.hxx>      // for mem_t.
-#include <moderngpu/cta_reduce.hxx>
 #include <agency/agency.hpp>
 #include <agency/experimental/strided_view.hpp>
 #include <agency/experimental/span.hpp>
