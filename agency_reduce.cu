@@ -44,23 +44,23 @@ void my_reduce(input_it input, int count, output_it reduction, BinaryOperation b
   {
     typedef typename launch_t::sm_ptx params_t;
 
-    constexpr int num_threads = params_t::nt;
-    constexpr int grainsize = params_t::vt;
-    constexpr int tile_size = num_threads * grainsize;
+    constexpr int group_size = params_t::nt;
+    constexpr int grain_size = params_t::vt;
+    constexpr int tile_size  = group_size * grain_size;
 
     // find this group's chunk of the input
     auto our_chunk = chunk(input_view, tile_size)[block_idx];
     
     // each agent strides through its group's chunk of the input...
-    auto my_values = strided(drop(our_chunk, agent_idx), size_t(num_threads));
+    auto my_values = strided(drop(our_chunk, agent_idx), size_t(group_size));
 
     // ...and sequentially computes a partial sum
-    auto partial_sum = uninitialized_reduce(bound<grainsize>(), my_values, binary_op);
+    auto partial_sum = uninitialized_reduce(bound<grain_size>(), my_values, binary_op);
 
     // the entire group cooperatively reduces the partial sums
-    int num_partials = min<int>(our_chunk.size(), (int)num_threads);
+    int num_partials = min<int>(our_chunk.size(), (int)group_size);
 
-    __shared__ reducing_barrier<T, num_threads> barrier;
+    __shared__ reducing_barrier<T, group_size> barrier;
     auto result = barrier.reduce_and_wait_and_elect(agent_idx, partial_sum, num_partials, binary_op);
 
     if(result)
