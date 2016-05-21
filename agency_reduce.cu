@@ -1,5 +1,4 @@
 #include <iostream>
-#include <moderngpu/transform.hxx>   // for cta_launch.
 #include <moderngpu/memory.hxx>      // for mem_t.
 #include <moderngpu/cta_reduce.hxx>
 #include <agency/agency.hpp>
@@ -7,6 +6,7 @@
 #include <agency/experimental/span.hpp>
 #include <agency/experimental/array.hpp>
 #include <agency/experimental/optional.hpp>
+#include <agency/experimental/chunk.hpp>
 #include <agency/cuda.hpp>
 #include "measure_bandwidth_of_invocation.hpp"
 #include "bound.hpp"
@@ -21,7 +21,6 @@ auto grid(int num_blocks, int num_threads) ->
 }
 
 using grid_agent = agency::parallel_group<agency::cuda::concurrent_agent>;
-
 
 template<typename launch_arg_t = mgpu::empty_t, typename input_it,  typename output_it, class BinaryOperation>
 void my_reduce(input_it input, int count, output_it reduction, BinaryOperation binary_op, mgpu::context_t& context)
@@ -40,6 +39,8 @@ void my_reduce(input_it input, int count, output_it reduction, BinaryOperation b
   mem_t<T> partials(num_ctas, context);
   T* partials_data = partials.data();
 
+  auto input_view = span<T>(input, count);
+
   auto k = [=] __device__ (int agent_idx, int block_idx)
   {
     typedef typename launch_t::sm_ptx params_t;
@@ -48,18 +49,17 @@ void my_reduce(input_it input, int count, output_it reduction, BinaryOperation b
     constexpr int grainsize = params_t::vt;
     constexpr int tile_size = num_threads * grainsize;
 
-    // Load the data for the first tile for each cta.
-    range_t tile = get_tile(block_idx, tile_size, count);
+    // find this group's chunk of the input
+    auto our_chunk = chunk(input_view, tile_size)[block_idx];
+    
+    // each agent strides through its group's chunk of the input...
+    auto my_values = strided(drop(our_chunk, agent_idx), size_t(num_threads));
 
-    // stride through the input and compute a partial sum per thread
-    span<T> our_span(input + tile.begin, input + tile.end);
-    auto my_values = strided(drop(our_span, agent_idx), size_t(num_threads));
-
-    // we don't have an initializer for the agent's sum, so use uninitialized_reduce
+    // ...and sequentially computes a partial sum
     auto partial_sum = uninitialized_reduce(bound<grainsize>(), my_values, binary_op);
 
-    // Reduce to a scalar per CTA.
-    int num_partials = min(tile.count(), (int)num_threads);
+    // the entire group cooperatively reduces the partial sums
+    int num_partials = min<int>(our_chunk.size(), (int)num_threads);
 
     __shared__ reducing_barrier<T, num_threads> barrier;
     auto result = barrier.reduce_and_wait_and_elect(agent_idx, partial_sum, num_partials, binary_op);
