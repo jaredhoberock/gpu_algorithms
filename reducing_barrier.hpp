@@ -1,6 +1,7 @@
 #pragma once
 
 #include <agency/experimental/optional.hpp>
+#include <agency/cuda/execution_agent.hpp>
 #include <cstddef>
 
 
@@ -147,10 +148,11 @@ class reducing_barrier
     reducing_barrier(reducing_barrier&&) = delete;
 
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 300
-    template<class BinaryOperation>
+    template<class ConcurrentAgent, class BinaryOperation>
     __device__
-    agency::experimental::optional<T> reduce_and_wait_and_elect(int agent_rank, const agency::experimental::optional<T>& value, int count, BinaryOperation binary_op)
+    agency::experimental::optional<T> reduce_and_wait_and_elect(ConcurrentAgent& self, const agency::experimental::optional<T>& value, int count, BinaryOperation binary_op)
     {
+      auto agent_rank = self.rank();
       auto partial_sum = value;
 
       // store partial sum to storage
@@ -161,7 +163,7 @@ class reducing_barrier
 
       using namespace agency::experimental;
       auto partial_sums = span<T>(storage_.data(), count);
-      __syncthreads();
+      self.wait();
 
       if(agent_rank < num_participating_agents)
       {
@@ -173,17 +175,18 @@ class reducing_barrier
         // reduce across the warp
         partial_sum = warp_barrier_.reduce_and_wait_and_elect(agent_rank, partial_sum, minimum(count, (int)num_participating_agents), binary_op);
       }
-      __syncthreads();
+      self.wait();
 
       return agent_rank == 0 ? partial_sum : agency::experimental::nullopt;
     }
 
 #else
 
-    template<class BinaryOperation>
+    template<class ConcurrentAgent, class BinaryOperation>
     __device__
-    agency::experimental::optional<T> reduce_and_wait_and_elect(int agent_rank, const agency::experimental::optional<T>& value, int count, BinaryOperation binary_op)
+    agency::experimental::optional<T> reduce_and_wait_and_elect(ConcurrentAgent& self, const agency::experimental::optional<T>& value, int count, BinaryOperation binary_op)
     {
+      auto agent_rank = self.rank();
       auto partial_sum = value;
 
       // store partial sum to storage
@@ -194,7 +197,7 @@ class reducing_barrier
 
       using namespace agency::experimental;
       auto partial_sums = span<T>(storage_.data(), count);
-      __syncthreads();
+      self.wait();
 
       if(agent_rank < num_participating_agents)
       {
@@ -208,7 +211,7 @@ class reducing_barrier
           storage_[agent_rank] = *partial_sum;
         }
       }
-      __syncthreads();
+      self.wait();
 
       int count2 = minimum(count, int(num_participating_agents));
       int first = (1 & num_passes) ? num_participating_agents : 0;
@@ -216,7 +219,7 @@ class reducing_barrier
       {
         storage_[first + agent_rank] = *partial_sum;
       }
-      __syncthreads();
+      self.wait();
 
 
       int offset = 1;
@@ -232,7 +235,7 @@ class reducing_barrier
           first = num_participating_agents - first;
           storage_[first + agent_rank] = *partial_sum;
         }
-        __syncthreads();
+        self.wait();
       }
 
       return agent_rank == 0 ? partial_sum : agency::experimental::nullopt;
@@ -240,19 +243,19 @@ class reducing_barrier
 
 #endif
 
-    template<class BinaryOperation>
+    template<class ConcurrentAgent, class BinaryOperation>
     __device__
-    T reduce_and_wait(int agent_rank, const agency::experimental::optional<T>& value, int count, BinaryOperation binary_op) const
+    T reduce_and_wait(ConcurrentAgent& self, const agency::experimental::optional<T>& value, int count, BinaryOperation binary_op) const
     {
-      auto result = reduce_and_wait_and_elect(agent_rank, value, count, binary_op);
+      auto result = reduce_and_wait_and_elect(self, value, count, binary_op);
 
       // XXX we're using inside knowledge that reduce_and_elect() always elects agent_rank == 0
-      if(agent_rank == 0)
+      if(self.rank() == 0)
       {
         storage_[0] = *result;
       }
 
-      __syncthreads();
+      self.wait();
 
       return storage_[0];
     }

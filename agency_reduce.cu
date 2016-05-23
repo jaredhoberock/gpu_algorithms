@@ -43,8 +43,8 @@ void my_reduce(input_it input, int count, output_it reduction, BinaryOperation b
 
   auto k = [=] __device__ (grid_agent& self)
   {
-    int agent_idx = self.inner().index();
-    int group_idx = self.outer().index();
+    int agent_rank = self.inner().rank();
+    int group_rank = self.outer().rank();
 
     typedef typename launch_t::sm_ptx params_t;
 
@@ -53,10 +53,10 @@ void my_reduce(input_it input, int count, output_it reduction, BinaryOperation b
     constexpr int chunk_size = group_size * grain_size;
 
     // find this group's chunk of the input
-    auto our_chunk = chunk(input_view, chunk_size)[group_idx];
+    auto our_chunk = chunk(input_view, chunk_size)[group_rank];
     
     // each agent strides through its group's chunk of the input...
-    auto my_values = strided(drop(our_chunk, agent_idx), size_t(group_size));
+    auto my_values = strided(drop(our_chunk, agent_rank), size_t(group_size));
 
     // ...and sequentially computes a partial sum
     auto partial_sum = uninitialized_reduce(bound<grain_size>(), my_values, binary_op);
@@ -65,13 +65,13 @@ void my_reduce(input_it input, int count, output_it reduction, BinaryOperation b
     int num_partials = min<int>(our_chunk.size(), (int)group_size);
 
     __shared__ reducing_barrier<T, group_size> barrier;
-    auto result = barrier.reduce_and_wait_and_elect(agent_idx, partial_sum, num_partials, binary_op);
+    auto result = barrier.reduce_and_wait_and_elect(self.inner(), partial_sum, num_partials, binary_op);
 
     if(result)
     {
       if(num_ctas > 1)
       {
-        partials_view[group_idx] = *result;
+        partials_view[group_rank] = *result;
       }
       else
       {
