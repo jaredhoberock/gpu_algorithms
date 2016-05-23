@@ -35,9 +35,10 @@ void my_reduce(input_it input, int count, output_it reduction, BinaryOperation b
 
   int num_ctas = launch_t::cta_dim(context).num_ctas(count);
   int num_threads = launch_t::cta_dim(context).nt;
-  mem_t<T> partials(num_ctas, context);
-  T* partials_data = partials.data();
 
+  mem_t<T> partials(num_ctas, context);
+
+  auto partials_view = span<T>(partials.data(), num_ctas);
   auto input_view = span<T>(input, count);
 
   auto k = [=] __device__ (int agent_idx, int group_idx)
@@ -67,7 +68,7 @@ void my_reduce(input_it input, int count, output_it reduction, BinaryOperation b
     {
       if(num_ctas > 1)
       {
-        partials_data[group_idx] = *result;
+        partials_view[group_idx] = *result;
       }
       else
       {
@@ -84,7 +85,7 @@ void my_reduce(input_it input, int count, output_it reduction, BinaryOperation b
   // Recursively call reduce until there's just one scalar.
   if(num_ctas > 1)
   {
-    my_reduce<launch_params_t<512, 4> >(partials_data, num_ctas, reduction, binary_op, context);
+    my_reduce<launch_params_t<512, 4> >(partials_view.begin(), num_ctas, reduction, binary_op, context);
   }
 }
 
