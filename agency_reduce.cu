@@ -46,10 +46,10 @@ void my_reduce(input_it input, int count, output_it reduction, BinaryOperation b
 
     constexpr int group_size = params_t::nt;
     constexpr int grain_size = params_t::vt;
-    constexpr int tile_size  = group_size * grain_size;
+    constexpr int chunk_size  = group_size * grain_size;
 
     // find this group's chunk of the input
-    auto our_chunk = chunk(input_view, tile_size)[group_idx];
+    auto our_chunk = chunk(input_view, chunk_size)[group_idx];
     
     // each agent strides through its group's chunk of the input...
     auto my_values = strided(drop(our_chunk, agent_idx), size_t(group_size));
