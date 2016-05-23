@@ -1,7 +1,7 @@
 #include <iostream>
 #include <moderngpu/memory.hxx>      // for mem_t.
 #include <agency/agency.hpp>
-#include <agency/experimental/strided_view.hpp>
+#include <agency/experimental/stride.hpp>
 #include <agency/experimental/span.hpp>
 #include <agency/experimental/array.hpp>
 #include <agency/experimental/optional.hpp>
@@ -56,7 +56,7 @@ void my_reduce(input_it input, int count, output_it reduction, BinaryOperation b
     auto our_chunk = chunk(input_view, chunk_size)[group_rank];
     
     // each agent strides through its group's chunk of the input...
-    auto my_values = strided(drop(our_chunk, agent_rank), size_t(group_size));
+    auto my_values = stride(drop(our_chunk, agent_rank), size_t(group_size));
 
     // ...and sequentially computes a partial sum
     auto partial_sum = uninitialized_reduce(bound<grain_size>(), my_values, binary_op);

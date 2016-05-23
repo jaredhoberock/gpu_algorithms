@@ -1,6 +1,7 @@
 #pragma once
 
 #include <agency/experimental/optional.hpp>
+#include <agency/experimental/stride.hpp>
 #include <agency/cuda/execution_agent.hpp>
 #include <cstddef>
 
@@ -168,7 +169,7 @@ class reducing_barrier
       if(agent_rank < num_participating_agents)
       {
         // stride through the input and compute a partial sum per agent
-        auto my_partial_sums = strided(drop(partial_sums, agent_rank), (int)num_participating_agents);
+        auto my_partial_sums = stride(drop(partial_sums, agent_rank), (int)num_participating_agents);
 
         partial_sum = ::uninitialized_reduce(bound<num_sequential_sums_per_agent>(), my_partial_sums, binary_op);
 
@@ -202,7 +203,7 @@ class reducing_barrier
       if(agent_rank < num_participating_agents)
       {
         // stride through the input and compute a partial sum per agent
-        auto my_partial_sums = strided(drop(partial_sums, agent_rank), (int)num_participating_agents);
+        auto my_partial_sums = stride(drop(partial_sums, agent_rank), (int)num_participating_agents);
 
         partial_sum = ::uninitialized_reduce(bound<num_sequential_sums_per_agent>(), my_partial_sums, binary_op);
 
