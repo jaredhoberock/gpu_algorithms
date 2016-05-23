@@ -41,8 +41,11 @@ void my_reduce(input_it input, int count, output_it reduction, BinaryOperation b
   auto partials_view = span<T>(partials.data(), num_ctas);
   auto input_view = span<T>(input, count);
 
-  auto k = [=] __device__ (int agent_idx, int group_idx)
+  auto k = [=] __device__ (grid_agent& self)
   {
+    int agent_idx = self.inner().index();
+    int group_idx = self.outer().index();
+
     typedef typename launch_t::sm_ptx params_t;
 
     constexpr int group_size = params_t::nt;
@@ -77,10 +80,7 @@ void my_reduce(input_it input, int count, output_it reduction, BinaryOperation b
     }
   };
 
-  agency::bulk_invoke(grid(num_ctas, num_threads), [=] __device__ (grid_agent& self)
-  {
-    k(self.inner().index(), self.outer().index());
-  });
+  agency::bulk_invoke(grid(num_ctas, num_threads), k);
 
   // Recursively call reduce until there's just one scalar.
   if(num_ctas > 1)
