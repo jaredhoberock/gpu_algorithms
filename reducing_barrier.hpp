@@ -2,7 +2,6 @@
 
 #include <agency/experimental/optional.hpp>
 #include <agency/experimental/stride.hpp>
-#include <agency/cuda/execution_agent.hpp>
 #include <cstddef>
 
 

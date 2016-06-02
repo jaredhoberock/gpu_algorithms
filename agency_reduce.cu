@@ -19,7 +19,7 @@ auto grid(int num_blocks, int num_threads) ->
   return agency::cuda::par(num_blocks, agency::cuda::con(num_threads));
 }
 
-using grid_agent = agency::parallel_group<agency::cuda::concurrent_agent>;
+using grid_agent = agency::parallel_group<agency::concurrent_agent>;
 
 template<typename launch_arg_t = mgpu::empty_t, typename input_it,  typename output_it, class BinaryOperation>
 void my_reduce(input_it input, int count, output_it reduction, BinaryOperation binary_op, mgpu::context_t& context)
