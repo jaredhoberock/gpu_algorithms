@@ -108,7 +108,7 @@ struct warp_reducing_barrier
 
   template<typename BinaryOperation>
   __device__
-  agency::experimental::optional<T> reduce_and_wait_and_elect(int lane, agency::experimental::optional<T> x, int count, BinaryOperation binary_op) const
+  static agency::experimental::optional<T> reduce_and_wait_and_elect(int lane, agency::experimental::optional<T> x, int count, BinaryOperation binary_op)
   {
     if(count == num_threads)
     { 
@@ -141,7 +141,21 @@ class reducing_barrier
     static_assert(0 == num_agents % 32, "num_agents must be a multiple of warp_size (32)");
    
     __device__
-    reducing_barrier() = default;
+    reducing_barrier()
+    {
+      // XXX note that we're explicitly opting out of default constructing the storage_ array
+      //     we do this because constructing the storage_ array yields a big slowdown
+      // XXX we should probably only apply this optimization when T is POD
+      // XXX we might consider a constructor which takes a ConcurrentAgent parameter
+      //     we could concurrently construct the storage_ array to speed things up
+      //     instead of making agent 0 do all the work sequentially
+      // XXX alternatively, we could placement new into storage_ upon entry into reduce_and_wait_and_elect()
+      //     when we do the assignment:
+      //
+      //         storage_[agent_rank] = *partial_sum;
+      //
+      //     if we went in this direction, we'd need to destroy storage_[agent_rank] right before we exit the function
+    }
 
     reducing_barrier(const reducing_barrier&) = delete;
 
@@ -152,6 +166,8 @@ class reducing_barrier
     __device__
     agency::experimental::optional<T> reduce_and_wait_and_elect(ConcurrentAgent& self, const agency::experimental::optional<T>& value, int count, BinaryOperation binary_op)
     {
+      using warp_barrier = warp_reducing_barrier<T, num_participating_agents>;
+
       auto agent_rank = self.rank();
       auto partial_sum = value;
 
@@ -173,7 +189,7 @@ class reducing_barrier
         partial_sum = ::uninitialized_reduce(bound<num_sequential_sums_per_agent>(), my_partial_sums, binary_op);
 
         // reduce across the warp
-        partial_sum = warp_barrier_.reduce_and_wait_and_elect(agent_rank, partial_sum, minimum(count, (int)num_participating_agents), binary_op);
+        partial_sum = warp_barrier::reduce_and_wait_and_elect(agent_rank, partial_sum, minimum(count, (int)num_participating_agents), binary_op);
       }
       self.wait();
 
@@ -269,10 +285,7 @@ class reducing_barrier
       num_sequential_sums_per_agent = num_agents / num_participating_agents 
     };
 
-    agency::experimental::array<T, maximum(num_agents, 2 * num_participating_agents)> storage_;
-
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 300
-    warp_reducing_barrier<T, num_participating_agents> warp_barrier_;
-#endif
+    using storage_type = agency::experimental::array<T, maximum(num_agents, 2 * num_participating_agents)>;
+    storage_type storage_;
 };
 
