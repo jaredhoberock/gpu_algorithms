@@ -3,6 +3,7 @@
 #include <agency/experimental/optional.hpp>
 #include <agency/experimental/stride.hpp>
 #include <cstddef>
+#include "algorithm.hpp"
 
 
 template<class T>
@@ -134,6 +135,14 @@ struct warp_reducing_barrier
 };
 
 
+// reducing_barrier.hpp & algorithm.hpp have a circular dependency
+// declare this algorithm here so reducing_barrier can call it below
+template<class ExecutionPolicy, class Range, class BinaryOperator>
+__host__ __device__
+agency::experimental::optional<agency::experimental::detail::range_value_t<typename std::decay<Range>::type>>
+  uninitialized_reduce(ExecutionPolicy policy, Range&& rng, BinaryOperator binary_op);
+
+
 template<class T, int num_agents>
 class reducing_barrier
 {
@@ -261,7 +270,7 @@ class reducing_barrier
 
     template<class ConcurrentAgent, class BinaryOperation>
     __device__
-    T reduce_and_wait(ConcurrentAgent& self, const agency::experimental::optional<T>& value, int count, BinaryOperation binary_op) const
+    T reduce_and_wait(ConcurrentAgent& self, const agency::experimental::optional<T>& value, int count, BinaryOperation binary_op)
     {
       auto result = reduce_and_wait_and_elect(self, value, count, binary_op);
 

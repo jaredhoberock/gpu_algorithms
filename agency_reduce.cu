@@ -11,6 +11,7 @@
 #include "bound.hpp"
 #include "algorithm.hpp"
 #include "reducing_barrier.hpp"
+#include "collective_ptr.hpp"
 #include <cstdio>
 
 auto grid(int num_blocks, int num_threads) ->
@@ -64,8 +65,9 @@ void my_reduce(input_it input, int count, output_it reduction, BinaryOperation b
     // the entire group cooperatively reduces the partial sums
     int num_partials = min<int>(our_chunk.size(), (int)group_size);
 
-    __shared__ reducing_barrier<T, group_size> barrier;
-    auto result = barrier.reduce_and_wait_and_elect(self.inner(), partial_sum, num_partials, binary_op);
+    using reduce_t = reducing_barrier<T,group_size>;
+    auto reducer_ptr = make_collective<reduce_t>(self.inner());
+    auto result = reducer_ptr->reduce_and_wait_and_elect(self.inner(), partial_sum, num_partials, binary_op);
 
     if(result)
     {
@@ -85,7 +87,8 @@ void my_reduce(input_it input, int count, output_it reduction, BinaryOperation b
   // Recursively call reduce until there's just one scalar.
   if(num_ctas > 1)
   {
-    my_reduce<launch_params_t<512, 4> >(partials_view.begin(), num_ctas, reduction, binary_op, context);
+    //my_reduce<launch_params_t<512, 4> >(partials_view.begin(), num_ctas, reduction, binary_op, context);
+    my_reduce<launch_params_t<128, 8> >(partials_view.begin(), num_ctas, reduction, binary_op, context);
   }
 }
 

@@ -3,6 +3,8 @@
 #include <agency/agency.hpp>
 #include <agency/experimental/view.hpp>
 #include <type_traits>
+#include "collective_ptr.hpp"
+#include "reducing_barrier.hpp"
 
 template<class ExecutionPolicy, class Result = void>
 struct enable_if_sequential
@@ -127,5 +129,30 @@ agency::experimental::optional<agency::experimental::detail::range_value_t<typen
   }
 
   return agency::experimental::nullopt;
+}
+
+
+template<std::size_t group_size, std::size_t grain_size, class Range, class BinaryOperator>
+__host__ __device__
+agency::experimental::detail::range_value_t<typename std::decay<Range>::type>
+  uninitialized_reduce(agency::experimental::static_concurrent_agent<group_size, grain_size>& self,
+                       Range&& rng,
+                       BinaryOperator binary_op)
+{
+  auto agent_rank = self.rank();
+
+  // each agent strides through its group's chunk of the input...
+  auto my_values = stride(drop(rng, agent_rank), size_t(group_size));
+  
+  // ...and sequentially computes a partial sum
+  auto partial_sum = uninitialized_reduce(bound<grain_size>(), my_values, binary_op);
+  
+  // the entire group cooperatively reduces the partial sums
+  int num_partials = rng.size() < group_size ? rng.size() : group_size;
+  
+  using T = agency::experimental::detail::range_value_t<typename std::decay<Range>::type>;
+  using reduce_t = reducing_barrier<T,group_size>;
+  auto reducer_ptr = make_collective<reduce_t>(self);
+  return reducer_ptr->reduce_and_wait(self, partial_sum, num_partials, binary_op);
 }
 
