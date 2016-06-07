@@ -14,13 +14,15 @@
 #include "collective_ptr.hpp"
 #include <cstdio>
 
-auto grid(int num_blocks, int num_threads) ->
-  decltype(agency::cuda::par(num_blocks, agency::cuda::con(num_threads)))
+template<size_t block_size, size_t grain_size = 1>
+auto static_grid(int num_blocks) ->
+  decltype(agency::cuda::par(num_blocks, agency::cuda::experimental::static_concurrent_execution_policy<block_size, grain_size>()))
 {
-  return agency::cuda::par(num_blocks, agency::cuda::con(num_threads));
+  return agency::cuda::par(num_blocks, agency::cuda::experimental::static_concurrent_execution_policy<block_size, grain_size>());
 }
 
-using grid_agent = agency::parallel_group<agency::concurrent_agent>;
+template<size_t block_size, size_t grain_size = 1>
+using static_grid_agent = agency::parallel_group<agency::experimental::static_concurrent_agent<block_size, grain_size>>;
 
 template<typename launch_arg_t = mgpu::empty_t, typename input_it,  typename output_it, class BinaryOperation>
 void my_reduce(input_it input, int count, output_it reduction, BinaryOperation binary_op, mgpu::context_t& context)
@@ -28,67 +30,49 @@ void my_reduce(input_it input, int count, output_it reduction, BinaryOperation b
   using namespace mgpu;
   using namespace agency::experimental;
 
-  typedef typename conditional_typedef_t<launch_arg_t, 
-    launch_params_t<128, 8>
-  >::type_t launch_t;
+  constexpr int group_size = 128;
+  constexpr int grain_size = 8;
+  constexpr int chunk_size = group_size * grain_size;
+  size_t num_groups = (count + chunk_size - 1) / chunk_size;
 
   typedef typename std::iterator_traits<input_it>::value_type T;
+  mem_t<T> partials(num_groups, context);
 
-  int num_ctas = launch_t::cta_dim(context).num_ctas(count);
-  int num_threads = launch_t::cta_dim(context).nt;
-
-  mem_t<T> partials(num_ctas, context);
-
-  auto partials_view = span<T>(partials.data(), num_ctas);
+  auto partials_view = span<T>(partials.data(), num_groups);
   auto input_view = span<T>(input, count);
 
-  auto k = [=] __device__ (grid_agent& self)
+  auto k = [=] __device__ (static_grid_agent<128,8>& self)
   {
-    int agent_rank = self.inner().rank();
     int group_rank = self.outer().rank();
-
-    typedef typename launch_t::sm_ptx params_t;
-
-    constexpr int group_size = params_t::nt;
-    constexpr int grain_size = params_t::vt;
-    constexpr int chunk_size = group_size * grain_size;
 
     // find this group's chunk of the input
     auto our_chunk = chunk(input_view, chunk_size)[group_rank];
     
-    // each agent strides through its group's chunk of the input...
-    auto my_values = stride(drop(our_chunk, agent_rank), size_t(group_size));
+    // cooperatively reduce across the group
+    // XXX we pay a small penalty for returning the result to the entire group
+    //     instead of exclusively rank 0
+    auto result = uninitialized_reduce(self.inner(), our_chunk, binary_op);
 
-    // ...and sequentially computes a partial sum
-    auto partial_sum = uninitialized_reduce(bound<grain_size>(), my_values, binary_op);
-
-    // the entire group cooperatively reduces the partial sums
-    int num_partials = min<int>(our_chunk.size(), (int)group_size);
-
-    using reduce_t = reducing_barrier<T,group_size>;
-    auto reducer_ptr = make_collective<reduce_t>(self.inner());
-    auto result = reducer_ptr->reduce_and_wait_and_elect(self.inner(), partial_sum, num_partials, binary_op);
-
-    if(result)
+    if(self.inner().elect())
     {
-      if(num_ctas > 1)
+      if(num_groups > 1)
       {
-        partials_view[group_rank] = *result;
+        partials_view[group_rank] = result;
       }
       else
       {
-        *reduction = *result;
+        *reduction = result;
       }
     }
   };
 
-  agency::bulk_invoke(grid(num_ctas, num_threads), k);
+  agency::bulk_invoke(static_grid<128,8>(num_groups), k);
 
   // Recursively call reduce until there's just one scalar.
-  if(num_ctas > 1)
+  if(num_groups > 1)
   {
-    //my_reduce<launch_params_t<512, 4> >(partials_view.begin(), num_ctas, reduction, binary_op, context);
-    my_reduce<launch_params_t<128, 8> >(partials_view.begin(), num_ctas, reduction, binary_op, context);
+    //my_reduce<launch_params_t<512, 4> >(partials_view.begin(), num_groups, reduction, binary_op, context);
+    my_reduce<launch_params_t<128, 8> >(partials_view.begin(), num_groups, reduction, binary_op, context);
   }
 }
 
