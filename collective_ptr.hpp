@@ -77,43 +77,20 @@ template<class T, class ConcurrentAgent, class... Args>
 __AGENCY_ANNOTATION
 collective_ptr<T, concurrent_agent_deleter<ConcurrentAgent>> make_collective(ConcurrentAgent& self, Args&&... args)
 {
-#ifdef __CUDA_ARCH__
-  __shared__ T* shared_result;
+  T* ptr = nullptr;
   if(self.elect())
   {
     // allocate the storage
     std::size_t n = sizeof(T);
-    T* ptr = reinterpret_cast<T*>(self.memory_resource().allocate<alignof(T)>(n));
+    ptr = reinterpret_cast<T*>(self.memory_resource().allocate<alignof(T)>(n));
 
     // construct the object
     ::new(ptr) T(std::forward<Args>(args)...);
-
-    shared_result = ptr;
   }
 
-  self.wait();
-  return collective_ptr<T, concurrent_agent_deleter<ConcurrentAgent>>(shared_result, concurrent_agent_deleter<ConcurrentAgent>(self));
-#else
-  // XXX this seems kinda tough
-  //     i think we need a static variable
-  //     for this and we need to mediate access to it via a
-  //     mutex
-  // XXX it might be a better idea to build a small communication
-  //     channel into concurrent_agent for these problems
-  // XXX we could have a member function:
-  //
-  //     template<class T>
-  //     T broadcast(const optional<T>& value)
-  //
-  //     Only one agent would present a non-empty value. The one non-empty
-  //     value would be returned to the entire group.
-  //
-  //     There could be an internal buffer used for broadcasting, and its
-  //     size could be implementation-defined.
-  //
-  //     Alternatively, the broadcasting buffer size could be configured
-  //     by param_type.
-  return nullptr;
-#endif
+  using namespace agency::experimental;
+  ptr = self.broadcast(ptr ? make_optional(ptr) : nullopt);
+
+  return collective_ptr<T, concurrent_agent_deleter<ConcurrentAgent>>(ptr, concurrent_agent_deleter<ConcurrentAgent>(self));
 }
 
