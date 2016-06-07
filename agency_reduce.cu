@@ -10,7 +10,6 @@
 #include "measure_bandwidth_of_invocation.hpp"
 #include "bound.hpp"
 #include "algorithm.hpp"
-#include "reducing_barrier.hpp"
 #include "collective_ptr.hpp"
 #include <cstdio>
 

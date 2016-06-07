@@ -5,7 +5,6 @@
 #include <agency/agency.hpp>
 #include <agency/cuda.hpp>
 #include "measure_bandwidth_of_invocation.hpp"
-#include "unroll.hpp"
 #include <cstdio>
 
 auto grid(int num_blocks, int num_threads) ->
