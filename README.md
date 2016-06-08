@@ -1,2 +1,2 @@
-# gpu_reduction
-Implementing reduction various ways
+# gpu_algorithms
+Implementing GPU algorithms various ways
