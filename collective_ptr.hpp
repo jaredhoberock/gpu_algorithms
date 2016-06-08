@@ -82,7 +82,7 @@ collective_ptr<T, concurrent_agent_deleter<ConcurrentAgent>> make_collective(Con
   {
     // allocate the storage
     std::size_t n = sizeof(T);
-    ptr = reinterpret_cast<T*>(self.memory_resource().allocate<alignof(T)>(n));
+    ptr = reinterpret_cast<T*>(self.memory_resource().allocate(n));
 
     // construct the object
     ::new(ptr) T(std::forward<Args>(args)...);
