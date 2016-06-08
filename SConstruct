@@ -5,7 +5,11 @@ env.MergeFlags(['-O3', '-std=c++11', '-lstdc++', '-lpthread', '-Isubmodules/mode
 # next, flags for nvcc
 env.MergeFlags(['--expt-extended-lambda', '-arch=sm_52'])
 
+# reduction implementations
 env.Program('mgpu_reduce.cu')
 env.Program('agency_mgpu_reduce.cu')
 env.Program('agency_reduce.cu')
+
+# scan implementations
+env.Program('mgpu_scan.cu')
 
