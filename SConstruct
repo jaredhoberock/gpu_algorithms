@@ -12,4 +12,5 @@ env.Program('agency_reduce.cu')
 
 # scan implementations
 env.Program('mgpu_scan.cu')
+env.Program('agency_mgpu_scan.cu')
 
