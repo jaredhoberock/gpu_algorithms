@@ -25,6 +25,8 @@ template<std::size_t group_size, std::size_t grain_size, class Range1, class Ran
 __device__
 void bounded_copy(agency::experimental::static_concurrent_agent<group_size, grain_size>& self, const Range1& in, Range2&& out)
 {
+  // XXX this implementation may be less efficient than the one below
+  //     because it computes strided indices twice
   using namespace agency::experimental;
 
   // create strided views of each range
@@ -37,5 +39,35 @@ void bounded_copy(agency::experimental::static_concurrent_agent<group_size, grai
 
   // wait for all agents to finish copying before returning
   self.wait();
+}
+
+// XXX eliminate this
+template<std::size_t group_size, std::size_t grain_size, class Range1, class Range2>
+__device__
+void bounded_copy(const Range1& in, Range2&& out)
+{
+  if(group_size * grain_size <= in.size())
+  {
+    for(size_t i = 0; i < grain_size; ++i)
+    {
+      int offset = threadIdx.x + i * group_size;
+
+      out[offset] = in[offset];
+    }
+  }
+  else
+  {
+    for(size_t i = 0; i < grain_size; ++i)
+    {
+      int offset = threadIdx.x + i * group_size;
+
+      if(offset < in.size())
+      {
+        out[offset] = in[offset];
+      }
+    }
+  }
+
+  __syncthreads();
 }
 

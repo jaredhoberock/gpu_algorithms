@@ -36,34 +36,11 @@ using static_grid_agent = agency::parallel_group<agency::experimental::static_co
 using namespace mgpu;
 
 
-template<int nt, int vt, int vt0 = vt, typename it_t>
-__device__
-array_t<typename std::iterator_traits<it_t>::value_type, vt> 
-my_mem_to_reg_strided(it_t mem, int tid, int count)
-{
-  typedef typename std::iterator_traits<it_t>::value_type type_t;
-
-  array_t<type_t, vt> x;
-  strided_iterate<nt, vt, vt0>([&](int i, int j)
-  { 
-    x[i] = mem[j]; 
-  },
-  tid,
-  count
-  );
-
-  return x;
-}
-
-
 template<int nt, int vt, int vt0 = vt, typename type_t, typename it_t, int shared_size>
 __device__ agency::experimental::array<type_t, vt>
 my_mem_to_reg_thread(it_t mem, int tid, int count, type_t (&shared)[shared_size])
 {
-  array_t<type_t, vt> x = my_mem_to_reg_strided<nt, vt, vt0>(mem, tid, count);
-
-  // XXX this call synchronizes
-  reg_to_shared_strided<nt, vt>(x, tid, shared);
+  bounded_copy<nt,vt>(agency::experimental::span<type_t>(mem,count), agency::experimental::span<type_t>(shared, count));
 
   agency::experimental::array<type_t, vt> y;
 
