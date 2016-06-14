@@ -37,7 +37,7 @@ using namespace mgpu;
 
 
 template<int nt, int vt, int vt0 = vt, typename type_t, typename it_t, int shared_size>
-__device__ array_t<type_t, vt>
+__device__ agency::experimental::array<type_t, vt>
 my_mem_to_reg_thread(it_t mem, int tid, int count, type_t (&shared)[shared_size])
 {
   array_t<type_t, vt> x = mem_to_reg_strided<nt, vt, vt0>(mem, tid, count);
@@ -45,7 +45,7 @@ my_mem_to_reg_thread(it_t mem, int tid, int count, type_t (&shared)[shared_size]
   // XXX this call synchronizes
   reg_to_shared_strided<nt, vt>(x, tid, shared);
 
-  array_t<type_t, vt> y;
+  agency::experimental::array<type_t, vt> y;
 
   for(size_t i = 0; i < vt; ++i)
   {
@@ -133,21 +133,24 @@ void my_scan_event(input_it input, int count, output_it output, op_t op, reducti
 
       // Load a tile to register in thread order.
       range_t tile = get_tile(cta, nv, count);
-      array_t<type_t, vt> x = my_mem_to_reg_thread<nt, vt>(input + tile.begin, tid, tile.count(), shared.values);
+      array<type_t, vt> local_subtile = my_mem_to_reg_thread<nt, vt>(input + tile.begin, tid, tile.count(), shared.values);
 
       // Scan the array with carry-in from the partials.
-      array_t<type_t, vt> y;
       if(scan_type == mgpu::scan_type_exc)
       {
-        y = scan_t().exclusive_scan(tid, x, shared.scan, partials_data[cta], tile.count(), op).scan;
+        local_subtile = scan_t().exclusive_scan(tid, local_subtile, shared.scan, partials_data[cta], tile.count(), op).scan;
       }
       else
       {
-        y = scan_t().inclusive_scan(tid, x, shared.scan, partials_data[cta], tile.count(), op).scan;
+        local_subtile = scan_t().inclusive_scan(tid, local_subtile, shared.scan, partials_data[cta], tile.count(), op).scan;
       }
 
+      // XXX eliminate this temporary
+      array_t<type_t, vt> temp;
+      sequential_bounded_copy<vt>(local_subtile, temp);
+
       // Store the scanned values to the output.
-      reg_to_mem_thread<nt, vt>(y, tid, tile.count(), output + tile.begin, shared.values);
+      reg_to_mem_thread<nt, vt>(temp, tid, tile.count(), output + tile.begin, shared.values);
     };
 
     agency::bulk_invoke(grid(num_ctas, num_threads), [=] __device__ (grid_agent& self)
@@ -204,20 +207,16 @@ void my_scan_event(input_it input, int count, output_it output, op_t op, reducti
         array<type_t, vt> local_subtile;
         sequential_bounded_copy<vt>(chunk(view_of_shared, vt)[tid], local_subtile);
 
-        // XXX 3. synchronize
-        array_t<type_t, vt> temp;
-        sequential_bounded_copy<vt>(local_subtile, temp);
-
         my_scan_result_t<type_t, vt> result;
         if(scan_type == mgpu::scan_type_exc)
         {
           //result = scan_t().exclusive_scan(tid, temp, shared.scan, carry_in, count2, op);
-          result = scan_t().exclusive_scan(tid, temp, shared.scan, carry_in, view_of_shared.size(), op);
+          result = scan_t().exclusive_scan(tid, local_subtile, shared.scan, carry_in, view_of_shared.size(), op);
         }
         else
         {
           //result = scan_t().inclusive_scan(tid, temp, shared.scan, carry_in, count2, op);
-          result = scan_t().inclusive_scan(tid, temp, shared.scan, carry_in, view_of_shared.size(), op);
+          result = scan_t().inclusive_scan(tid, local_subtile, shared.scan, carry_in, view_of_shared.size(), op);
         }
 
         // XXX 4. each thread copies its subtile back into shared memory

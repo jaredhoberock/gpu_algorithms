@@ -18,7 +18,7 @@ struct my_scan_result_t {
 
 template<typename type_t, int vt>
 struct my_scan_result_t<type_t, vt, true> {
-  array_t<type_t, vt> scan;
+  agency::experimental::array<type_t, vt> scan;
   type_t reduction;
 };
 
@@ -159,10 +159,10 @@ struct my_cta_scan_t
   // CTA vectorized scan. Accepts multiple values per thread and adds in 
   // optional global carry-in.
 
-  template<int vt, typename op_t = plus_t<type_t>>
+  template<size_t vt, typename op_t = plus_t<type_t>>
   __device__
   my_scan_result_t<type_t, vt>
-    inclusive_scan(int tid, array_t<type_t, vt> local_array, storage_t& storage, type_t carry_in, int count = nt, op_t op = op_t()) const
+    inclusive_scan(int tid, agency::experimental::array<type_t, vt> local_array, storage_t& storage, type_t carry_in, int count = nt, op_t op = op_t()) const
   {
     // XXX this simpler implementation computes the same result as what is used below, but it requires additional state
     //     e.g., local_sum. the additional state requires more registers
@@ -181,7 +181,7 @@ struct my_cta_scan_t
     ::inclusive_scan(bound<vt>(), local_array, local_array, op);
 
     // exclusive scan the thread-local sums to produce a carry-in for each thread
-    my_scan_result_t<type_t> result = exclusive_scan(tid, local_array[vt - 1], storage, div_up(count, vt), carry_in, op);
+    my_scan_result_t<type_t> result = exclusive_scan(tid, local_array[vt - 1], storage, div_up<int>(count, vt), carry_in, op);
 
     // to produce the final ixclusive scan, add in the thread's carry-in
     for(int i = 0; i < vt; ++i)
@@ -192,10 +192,10 @@ struct my_cta_scan_t
     return my_scan_result_t<type_t, vt>{ local_array, result.reduction };
   }
 
-  template<int vt, typename op_t = plus_t<type_t>>
+  template<size_t vt, typename op_t = plus_t<type_t>>
   __device__
   my_scan_result_t<type_t, vt>
-    exclusive_scan(int tid, array_t<type_t, vt> local_array, storage_t& storage, type_t carry_in = type_t(), int count = nt, op_t op = op_t()) const
+    exclusive_scan(int tid, agency::experimental::array<type_t, vt> local_array, storage_t& storage, type_t carry_in = type_t(), int count = nt, op_t op = op_t()) const
   {
     // XXX this simpler implementation computes the same result as what is used below, but it requires additional state
     //     e.g., local_sum. the additional state requires more registers
@@ -214,7 +214,7 @@ struct my_cta_scan_t
     ::inclusive_scan(bound<vt>(), local_array, local_array, op);
 
     // exclusive scan the thread-local sums to produce a carry-in for each thread
-    my_scan_result_t<type_t> result = exclusive_scan(tid, local_array[vt - 1], storage, div_up(count, vt), carry_in, op);
+    my_scan_result_t<type_t> result = exclusive_scan(tid, local_array[vt - 1], storage, div_up<int>(count, vt), carry_in, op);
 
     // to produce the final exclusive scan, shift the local_array right one slot and add in the thread's carry-in
     auto prev_plus_carry = result.scan;
