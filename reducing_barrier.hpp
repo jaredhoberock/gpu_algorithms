@@ -4,6 +4,7 @@
 #include <agency/experimental/stride.hpp>
 #include <cstddef>
 #include "algorithm.hpp"
+#include "bound.hpp"
 
 
 template<class T>
