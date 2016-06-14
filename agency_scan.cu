@@ -37,8 +37,8 @@ using namespace mgpu;
 
 
 template<int nt, int vt, int vt0 = vt, typename type_t, typename it_t, int shared_size>
-__device__ agency::experimental::array<type_t, vt>
-my_mem_to_reg_thread(it_t mem, int tid, int count, type_t (&shared)[shared_size])
+__device__
+agency::experimental::array<type_t, vt> my_mem_to_reg_thread(it_t mem, int tid, int count, type_t (&shared)[shared_size])
 {
   bounded_copy<nt,vt>(agency::experimental::span<type_t>(mem,count), agency::experimental::span<type_t>(shared, count));
 
@@ -53,6 +53,17 @@ my_mem_to_reg_thread(it_t mem, int tid, int count, type_t (&shared)[shared_size]
 
   return y;
 }
+
+
+template<int nt, int vt, int vt0 = vt, typename type_t, typename it_t, int shared_size>
+__device__ 
+void my_reg_to_mem_thread(array_t<type_t, vt> x, int tid, int count, it_t mem, type_t (&shared)[shared_size])
+{
+  reg_to_shared_thread<nt>(x, tid, shared);
+  array_t<type_t, vt> y = shared_to_reg_strided<nt, vt>(shared, tid);
+  reg_to_mem_strided<nt, vt, vt0>(y, tid, count, mem);
+}
+
 
 template<mgpu::scan_type_t scan_type = mgpu::scan_type_exc, 
   typename launch_arg_t = empty_t, typename input_it, 
@@ -147,7 +158,7 @@ void my_scan_event(input_it input, int count, output_it output, op_t op, reducti
       sequential_bounded_copy<vt>(local_subtile, temp);
 
       // Store the scanned values to the output.
-      reg_to_mem_thread<nt, vt>(temp, tid, tile.count(), output + tile.begin, shared.values);
+      my_reg_to_mem_thread<nt, vt>(temp, tid, tile.count(), output + tile.begin, shared.values);
     };
 
     agency::bulk_invoke(grid(num_ctas, num_threads), [=] __device__ (grid_agent& self)
