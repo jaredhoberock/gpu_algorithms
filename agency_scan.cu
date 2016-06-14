@@ -10,6 +10,7 @@
 #include <agency/cuda.hpp>
 #include "measure_bandwidth_of_invocation.hpp"
 #include "algorithm.hpp"
+#include "algorithm/copy.hpp"
 #include "scanning_barrier.hpp"
 
 
@@ -33,39 +34,6 @@ template<size_t block_size, size_t grain_size = 1>
 using static_grid_agent = agency::parallel_group<agency::experimental::static_concurrent_agent<block_size, grain_size>>;
 
 using namespace mgpu;
-
-template<std::size_t bound, class Range1, class Range2>
-__device__
-void sequential_bounded_copy(Range1&& in, Range2&& out)
-{
-  for(std::size_t i = 0; i < bound; ++i)
-  {
-    if(i < in.size())
-    {
-      out[i] = in[i];
-    }
-  }
-}
-
-
-template<std::size_t group_size, std::size_t grain_size, class Range1, class Range2>
-__device__
-void bounded_copy(agency::experimental::static_concurrent_agent<group_size, grain_size>& self, const Range1& in, Range2&& out)
-{
-  using namespace agency::experimental;
-
-  // create strided views of each range
-  auto view_of_this_agents_input  = stride(drop(in, self.rank()), size_t(group_size));
-
-  auto view_of_this_agents_output = stride(drop(out, self.rank()), size_t(group_size));
-
-  // each agent copies sequentially at most grain_size elements
-  copy(bound<grain_size>(), view_of_this_agents_input, view_of_this_agents_output.begin());
-
-  // wait for all agents to finish copying before returning
-  self.wait();
-}
-
 
 template<mgpu::scan_type_t scan_type = mgpu::scan_type_exc, 
   typename launch_arg_t = empty_t, typename input_it, 
