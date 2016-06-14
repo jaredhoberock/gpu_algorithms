@@ -35,6 +35,28 @@ using static_grid_agent = agency::parallel_group<agency::experimental::static_co
 
 using namespace mgpu;
 
+
+template<int nt, int vt, int vt0 = vt, typename type_t, typename it_t, int shared_size>
+__device__ array_t<type_t, vt>
+my_mem_to_reg_thread(it_t mem, int tid, int count, type_t (&shared)[shared_size])
+{
+  array_t<type_t, vt> x = mem_to_reg_strided<nt, vt, vt0>(mem, tid, count);
+
+  // XXX this call synchronizes
+  reg_to_shared_strided<nt, vt>(x, tid, shared);
+
+  array_t<type_t, vt> y;
+
+  for(size_t i = 0; i < vt; ++i)
+  {
+    y[i] = shared[tid * vt + i];
+  }
+
+  __syncthreads();
+
+  return y;
+}
+
 template<mgpu::scan_type_t scan_type = mgpu::scan_type_exc, 
   typename launch_arg_t = empty_t, typename input_it, 
   typename output_it, typename op_t, typename reduction_it>
@@ -111,7 +133,7 @@ void my_scan_event(input_it input, int count, output_it output, op_t op, reducti
 
       // Load a tile to register in thread order.
       range_t tile = get_tile(cta, nv, count);
-      array_t<type_t, vt> x = mem_to_reg_thread<nt, vt>(input + tile.begin, tid, tile.count(), shared.values);
+      array_t<type_t, vt> x = my_mem_to_reg_thread<nt, vt>(input + tile.begin, tid, tile.count(), shared.values);
 
       // Scan the array with carry-in from the partials.
       array_t<type_t, vt> y;
@@ -125,8 +147,7 @@ void my_scan_event(input_it input, int count, output_it output, op_t op, reducti
       }
 
       // Store the scanned values to the output.
-      reg_to_mem_thread<nt, vt>(y, tid, tile.count(), output + tile.begin, 
-        shared.values);    
+      reg_to_mem_thread<nt, vt>(y, tid, tile.count(), output + tile.begin, shared.values);
     };
 
     agency::bulk_invoke(grid(num_ctas, num_threads), [=] __device__ (grid_agent& self)
