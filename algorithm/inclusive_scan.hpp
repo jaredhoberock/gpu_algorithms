@@ -3,9 +3,9 @@
 #include "../bound.hpp"
 #include "../algorithm.hpp"
 
-template<size_t bound, class Range, class BinaryOperation, class T>
+template<size_t bound, class Range1, class Range2, class BinaryOperation, class T>
 __host__ __device__
-void inclusive_scan(bounded_execution_policy<bound> policy, Range&& in, Range&& out, BinaryOperation binary_op, T init)
+void inclusive_scan(bounded_execution_policy<bound> policy, Range1&& in, Range2&& out, BinaryOperation binary_op, T init)
 {
   auto input_size = in.size();
 
@@ -44,9 +44,9 @@ void inclusive_scan(bounded_execution_policy<bound> policy, Range&& in, Range&& 
   }
 }
 
-template<size_t bound, class Range, class BinaryOperation>
+template<size_t bound, class Range1, class Range2, class BinaryOperation>
 __host__ __device__
-void inclusive_scan(bounded_execution_policy<bound> policy, Range&& in, Range&& out, BinaryOperation binary_op)
+void inclusive_scan(bounded_execution_policy<bound> policy, Range1&& in, Range2&& out, BinaryOperation binary_op)
 {
   auto input_size = in.size();
 
