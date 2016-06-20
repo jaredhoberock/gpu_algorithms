@@ -85,3 +85,38 @@ void inclusive_scan(bounded_execution_policy<bound> policy, Range1&& in, Range2&
   }
 }
 
+// XXX integrate this implementation using bounded_for_loop into the implementations above
+template<size_t bound, class Range1, class Range2, class BinaryOperation>
+__host__ __device__
+void inclusive_scan(const Range1& in, Range2&& out, BinaryOperation binary_op)
+{
+  bounded_for_loop<bound>(in.size(), [&](int i)
+  {
+    if(i == 0)
+    {
+      out[i] = in[i];
+    }
+    else
+    {
+      out[i] = binary_op(in[i], out[i - 1]);
+    }
+  });
+}
+
+// XXX integrate this implementation using bounded_for_loop into the implementations above
+template<size_t bound, class Range1, class Range2, class BinaryOperation, class T>
+__host__ __device__
+void inclusive_scan(const Range1& in, Range2&& out, BinaryOperation binary_op, T init)
+{
+  bounded_for_loop<bound>(in.size(), [&](int i)
+  {
+    if(i == 0)
+    {
+      out[i] = binary_op(init, in[i]);
+    }
+    else
+    {
+      out[i] = binary_op(in[i], out[i - 1]);
+    }
+  });
+}
