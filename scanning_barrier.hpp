@@ -95,6 +95,60 @@ struct my_cta_scan_t
 
   //////////////////////////////////////////////////////////////////////////////
   // Standard CTA scan code that does not use shfl intrinsics. 
+  template<class BinaryOperation>
+  __device__
+  type_t inplace_exclusive_scan(int tid, type_t& summand, storage_t& storage, int count, type_t init, BinaryOperation binary_op) const
+  {
+    // the first agent accumulates init into its summand
+    if(tid == 0 && count > 0)
+    {
+      summand = binary_op(init, summand);
+    }
+
+    // all agents store their summand to temporary storage
+    if(tid < count)
+    {
+      storage.data[tid] = summand;
+    }
+
+    __syncthreads();
+
+    // double buffer to eliminate one barrier in the loop below 
+    int first = 0;
+
+    for(int offset = 1; offset < count; offset += offset)
+    {
+      if(tid >= offset)
+      {
+        summand = binary_op(storage.data[first + tid - offset], summand);
+      }
+
+      first = nt - first;
+
+      storage.data[first + tid] = summand;
+
+      __syncthreads();
+    }
+
+    type_t carry_out = count > 0 ? storage.data[first + count - 1] : init;
+
+    if(tid < count)
+    {
+      if(tid == 0)
+      {
+        summand = init;
+      }
+      else
+      {
+        summand = storage.data[first + tid - 1];
+      }
+    }
+
+    __syncthreads();
+
+    return carry_out;
+  }
+
 
   template<class BinaryOperation>
   __device__

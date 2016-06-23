@@ -29,3 +29,17 @@ agency::experimental::detail::range_value_t<typename std::decay<Range>::type>
   return accumulate(policy, agency::experimental::drop(std::forward<Range>(rng), 1), std::forward<Range>(rng)[0], binary_op);
 }
 
+template<size_t grain_size, class Range, class BinaryOperator>
+__host__ __device__
+agency::experimental::detail::range_value_t<typename std::decay<Range>::type>
+  accumulate_nonempty(Range&& rng, BinaryOperator binary_op)
+{
+  auto result = rng[0];
+  bounded_for_loop<grain_size - 1>(rng.size() - 1, [&](int i)
+  {
+    result = binary_op(result, rng[i+1]);
+  });
+
+  return result;
+}
+

@@ -1,5 +1,7 @@
 #include <numeric>
 #include <iostream>
+#include <random>
+#include <algorithm>
 
 #include <moderngpu/transform.hxx>   // for cta_launch.
 #include <moderngpu/memory.hxx>      // for mem_t.
@@ -7,10 +9,15 @@
 #include <agency/agency.hpp>
 #include <agency/experimental/span.hpp>
 #include <agency/experimental/chunk.hpp>
+#include <agency/experimental/short_vector.hpp>
 #include <agency/cuda.hpp>
+#include <thrust/copy.h>
+#include <thrust/device_ptr.h>
 #include "measure_bandwidth_of_invocation.hpp"
 #include "algorithm.hpp"
 #include "algorithm/copy.hpp"
+#include "algorithm/inclusive_scan.hpp"
+#include "algorithm/exclusive_scan.hpp"
 #include "scanning_barrier.hpp"
 
 
@@ -35,268 +42,402 @@ using static_grid_agent = agency::parallel_group<agency::experimental::static_co
 
 using namespace mgpu;
 
-
-template<int nt, int vt, int vt0 = vt, typename type_t, typename it_t, int shared_size>
+template<bool exclusive, size_t group_size, size_t grain_size, class Range1, class Range2, class T, class BinaryOperation>
 __device__
-agency::experimental::array<type_t, vt> my_mem_to_reg_thread(it_t mem, int tid, int count, type_t (&shared)[shared_size])
+T scan_tile(agency::experimental::static_concurrent_agent<group_size,grain_size>& self, Range1&& in, Range2&& out, T init, BinaryOperation binary_op)
 {
-  bounded_copy<nt,vt>(agency::experimental::span<type_t>(mem,count), agency::experimental::span<type_t>(shared, count));
+  using namespace agency::experimental;
 
-  agency::experimental::array<type_t, vt> y;
+  constexpr size_t tile_size = group_size * grain_size;
 
-  for(size_t i = 0; i < vt; ++i)
+  int tid = self.rank();
+  
+  typedef my_cta_scan_t<group_size, T> scan_t;
+  
+  __shared__ union {
+    typename scan_t::storage_t scan;
+    T values[tile_size];
+  } shared;
+
+  // cooperatively copy the tile from input into shared memory 
+  auto view_of_shared = span<T>(shared.values, in.size());
+  bounded_copy(self, in, view_of_shared);
+  
+  // partition shared memory into subtiles of grain_size width
+  auto view_of_shared_subtiles = chunk(view_of_shared, grain_size);
+  
+  // each thread gets a view of its subtile, unless we've reached the end of the input, in which case it gets an empty view
+  auto view_of_shared_subtile = tid < view_of_shared_subtiles.size() ? view_of_shared_subtiles[tid] : view_of_shared_subtiles.empty_chunk();
+  
+  // each thread copies its subtile into an in-register local array
+  short_vector<T,grain_size> local_subtile = view_of_shared_subtile;
+  
+  // each thread sums its subtile
+  T summand;
+  if(local_subtile.size())
   {
-    y[i] = shared[tid * vt + i];
+    summand = accumulate_nonempty(bound<grain_size>(), local_subtile, binary_op);
+  }
+  
+  self.wait();
+  
+  // compute the prefix sum of the per-thread sums 
+  // this prefix sum is the "spine"
+  //my_scan_result_t<T> scan_of_spine = scan_t().exclusive_scan(tid, summand, shared.scan, view_of_shared_subtiles.size(), init, binary_op);
+  init = scan_t().inplace_exclusive_scan(tid, summand, shared.scan, view_of_shared_subtiles.size(), init, binary_op);
+  
+  // each thread computes the prefix sum of its subtile and puts the result directly into shared memory
+  if(exclusive)
+  {
+    //exclusive_scan(bound<grain_size>(), local_subtile, view_of_shared_subtile, scan_of_spine.scan, binary_op);
+    exclusive_scan(bound<grain_size>(), local_subtile, view_of_shared_subtile, summand, binary_op);
+  }
+  else
+  {
+    //inclusive_scan(bound<grain_size>(), local_subtile, view_of_shared_subtile, binary_op, scan_of_spine.scan);
+    inclusive_scan(bound<grain_size>(), local_subtile, view_of_shared_subtile, binary_op, summand);
+  }
+  
+  self.wait();
+  
+  // cooperatively copy the tile from shared memory to the output
+  bounded_copy(self, view_of_shared, out);
+  
+  // update the current carry
+  //init = scan_of_spine.reduction;
+
+  return init;
+}
+
+
+template<bool exclusive, size_t group_size, size_t grain_size, class Range1, class Range2, class T, class BinaryOperation>
+__device__
+T scan(agency::experimental::static_concurrent_agent<group_size,grain_size>& self, Range1&& in, Range2&& out, T init, BinaryOperation binary_op)
+{
+  using namespace agency::experimental;
+
+  constexpr size_t tile_size = group_size * grain_size;
+
+  int tid = self.rank();
+  
+  typedef my_cta_scan_t<group_size, T> scan_t;
+  
+  __shared__ union {
+    typename scan_t::storage_t scan;
+    T values[tile_size];
+  } shared;
+  
+  // XXX cooperatively call scan
+  //     the implementation is below
+
+  auto view_of_input_tiles  = chunk(in, tile_size);
+  auto view_of_output_tiles = chunk(out, tile_size);
+  
+  for(int tile = 0; tile < view_of_input_tiles.size(); ++tile)
+  {
+    auto view_of_current_input_tile = view_of_input_tiles[tile];
+  
+    // cooperatively copy the tile from input into shared memory 
+    auto view_of_shared = span<T>(shared.values, view_of_current_input_tile.size());
+    bounded_copy(self, view_of_current_input_tile, view_of_shared);
+  
+    // partition shared memory into subtiles of grain_size width
+    auto view_of_shared_subtiles = chunk(view_of_shared, grain_size);
+  
+    // each thread gets a view of its subtile, unless we've reached the end of the input, in which case it gets an empty view
+    auto view_of_shared_subtile = tid < view_of_shared_subtiles.size() ? view_of_shared_subtiles[tid] : view_of_shared_subtiles.empty_chunk();
+  
+    // each thread copies its subtile into an in-register local array
+    short_vector<T,grain_size> local_subtile = view_of_shared_subtile;
+  
+    // each thread sums its subtile
+    T summand;
+    if(local_subtile.size())
+    {
+      summand = accumulate_nonempty(bound<grain_size>(), local_subtile, binary_op);
+    }
+  
+    self.wait();
+  
+    // compute the prefix sum of the per-thread sums 
+    // this prefix sum is the "spine"
+    //my_scan_result_t<T> scan_of_spine = scan_t().exclusive_scan(tid, summand, shared.scan, view_of_shared_subtiles.size(), init, binary_op);
+    init = scan_t().inplace_exclusive_scan(tid, summand, shared.scan, view_of_shared_subtiles.size(), init, binary_op);
+  
+    // each thread computes the prefix sum of its subtile and puts the result directly into shared memory
+    if(exclusive)
+    {
+      //exclusive_scan(bound<grain_size>(), local_subtile, view_of_shared_subtile, scan_of_spine.scan, binary_op);
+      exclusive_scan(bound<grain_size>(), local_subtile, view_of_shared_subtile, summand, binary_op);
+    }
+    else
+    {
+      //inclusive_scan(bound<grain_size>(), local_subtile, view_of_shared_subtile, binary_op, scan_of_spine.scan);
+      inclusive_scan(bound<grain_size>(), local_subtile, view_of_shared_subtile, binary_op, summand);
+    }
+  
+    self.wait();
+  
+    // cooperatively copy the tile from shared memory to the output
+    auto view_of_current_output_tile = view_of_output_tiles[tile];
+    bounded_copy(self, view_of_shared, view_of_current_output_tile);
+  
+    // update the current carry
+    //init = scan_of_spine.reduction;
   }
 
-  __syncthreads();
-
-  return y;
+  return init;
 }
 
 
-template<int nt, int vt, int vt0 = vt, typename type_t, typename it_t, int shared_size>
-__device__ 
-void my_reg_to_mem_thread(array_t<type_t, vt> x, int tid, int count, it_t mem, type_t (&shared)[shared_size])
+template<size_t group_size, size_t grain_size, class Range1, class Range2, class BinaryOperation, class T>
+__device__
+T inclusive_scan(agency::experimental::static_concurrent_agent<group_size,grain_size>& self, Range1&& in, Range2&& out, BinaryOperation binary_op, T init)
 {
-  reg_to_shared_thread<nt>(x, tid, shared);
-  array_t<type_t, vt> y = shared_to_reg_strided<nt, vt>(shared, tid);
-  reg_to_mem_strided<nt, vt, vt0>(y, tid, count, mem);
+  return scan<false>(self, in, out, init, binary_op);
 }
 
 
-template<mgpu::scan_type_t scan_type = mgpu::scan_type_exc, 
-  typename launch_arg_t = empty_t, typename input_it, 
-  typename output_it, typename op_t, typename reduction_it>
-void my_scan_event(input_it input, int count, output_it output, op_t op, reduction_it reduction, context_t& context)
+template<size_t group_size, size_t grain_size, class Range1, class Range2, class BinaryOperation, class T>
+__device__
+T exclusive_scan(agency::experimental::static_concurrent_agent<group_size,grain_size>& self, Range1&& in, Range2&& out, T init, BinaryOperation binary_op)
+{
+  return scan<true>(self, in, out, init, binary_op);
+}
+
+
+template<class Range, class BinaryOperation>
+std::vector<int> reduce_tiles(Range&& in, size_t tile_size, BinaryOperation binary_op)
+{
+  using namespace agency::experimental;
+
+  auto tiles = chunk(in, tile_size);
+
+  std::vector<int> out(tiles.size());
+
+  for(int i = 0; i < tiles.size(); ++i)
+  {
+    auto tile = tiles[i];
+    out[i] = std::accumulate(tile.begin(), tile.end(), 0, binary_op);
+  }
+
+  return out;
+}
+
+template<class Range1, class Range2, class BinaryOperation>
+void inplace_inclusive_scan_tiles(Range1&& in, size_t tile_size, Range2&& inits, BinaryOperation binary_op)
+{
+  using namespace agency::experimental;
+
+  auto tiles = chunk(in, tile_size);
+
+  for(int i = 0; i < tiles.size(); ++i)
+  {
+    auto tile = tiles[i];
+    auto init = inits[i];
+
+    tile[0] = binary_op(init, tile[0]);
+
+    thrust::inclusive_scan(tile.begin(), tile.end(), tile.begin(), binary_op);
+  }
+}
+
+
+template<class T>
+std::vector<T> to_vector(agency::experimental::span<T> s)
+{
+  std::vector<T> result(s.size());
+
+  thrust::copy_n(thrust::device_pointer_cast(s.data()), s.size(), result.begin());
+
+  return result;
+}
+
+
+template<class Range1, class Range2, class BinaryOperation, class T>
+void inclusive_scan(Range1&& in, Range2&& out, BinaryOperation binary_op, T init, context_t& context)
 {
   using namespace agency::experimental;
 
   constexpr size_t group_size = 128;
   constexpr size_t grain_size = 11;
+  constexpr size_t tile_size = group_size * grain_size;
 
-  typedef typename conditional_typedef_t<launch_arg_t, 
-    launch_box_t<
-      arch_52_cta<group_size, grain_size>
-    >
-  >::type_t launch_t;
+  // use a different configuration for small problem sizes
+  constexpr size_t small_group_size = 512;
+  constexpr size_t small_grain_size = 3;
 
-  typedef typename std::iterator_traits<input_it>::value_type type_t;
-  using T = type_t;
+  auto input_view  = all(in);
+  auto output_view = all(out);
 
-  int num_ctas = launch_t::cta_dim(context).num_ctas(count);
-  int num_threads = launch_t::cta_dim(context).nt;
+  size_t num_ctas = (input_view.size() + tile_size - 1) / tile_size;
 
-  auto input_view  = span<T>(input, count);
-  auto output_view = span<T>(output, count);
+  auto chunks = chunk(input_view, tile_size);
 
   if(num_ctas > 8)
   {
-    mem_t<type_t> partials(num_ctas, context);
-    type_t* partials_data = partials.data();
+    mem_t<T> partials(num_ctas, context);
+    T* partials_data = partials.data();
 
-    ////////////////////////////////////////////////////////////////////////////
-    // Upsweep phase. Reduce each tile to a scalar and store to partials.
     auto partials_view = span<T>(partials.data(), num_ctas);
 
-    auto upsweep_k = [=] __device__ (static_grid_agent<group_size,grain_size>& self)
+    auto upsweep_kernel = [=] __device__ (static_grid_agent<group_size,grain_size>& self)
     {
       int group_rank = self.outer().rank();
 
       // find this group's chunk of the input
-      constexpr size_t chunk_size = group_size * grain_size;
-      auto view_of_this_groups_chunk = chunk(input_view, chunk_size)[group_rank];
+      constexpr size_t tile_size = group_size * grain_size;
+      auto view_of_this_groups_chunk = chunk(input_view, tile_size)[group_rank];
       
       // cooperatively reduce across the group and elect an agent to receive the result
       // XXX this should respect noncommutativity and reduce() doesn't do that
-      auto result = uninitialized_reduce_and_elect(self.inner(), view_of_this_groups_chunk, op);
+      auto result = uninitialized_reduce_and_elect(self.inner(), view_of_this_groups_chunk, binary_op);
 
       if(result)
       {
         partials_view[group_rank] = *result;
       }
     };
+    agency::bulk_invoke(static_grid<group_size,grain_size>(num_ctas), upsweep_kernel);
 
-    agency::bulk_invoke(static_grid<group_size,grain_size>(num_ctas), upsweep_k);
+    auto spine_kernel = [=] __device__ (static_grid_agent<small_group_size,small_grain_size>& self)
+    {
+      exclusive_scan(self.inner(), partials_view, partials_view, init, binary_op);
+    };
+    agency::bulk_invoke(static_grid<small_group_size,small_grain_size>(1), spine_kernel);
 
-    ////////////////////////////////////////////////////////////////////////////
-    // Spine phase. Recursively call scan on the CTA partials.
+    auto downsweep_kernel = [=] __device__ (static_grid_agent<group_size,grain_size>& self)
+    {
+      int group_rank = self.outer().rank();
 
-    ::my_scan_event<mgpu::scan_type_exc>(partials_data, num_ctas, partials_data,
-      op, reduction, context);
+      constexpr size_t tile_size = group_size * grain_size;
+      auto input_tile = chunk(input_view, tile_size)[group_rank];
+      auto output_tile = chunk(output_view, tile_size)[group_rank];
 
-    ////////////////////////////////////////////////////////////////////////////
-    // Downsweep phase. Perform an intra-tile scan and add the scan of the 
-    // partials as carry-in.
-
-    auto downsweep_k = [=] MGPU_DEVICE(int tid, int cta) {
-      typedef typename launch_t::sm_ptx params_t;
-      enum { nt = params_t::nt, vt = params_t::vt, nv = nt * vt };
-      typedef my_cta_scan_t<nt, type_t> scan_t;
-
-      __shared__ union {
-        typename scan_t::storage_t scan;
-        type_t values[nv];
-      } shared;
-
-      // Load a tile to register in thread order.
-      range_t tile = get_tile(cta, nv, count);
-      array<type_t, vt> local_subtile = my_mem_to_reg_thread<nt, vt>(input + tile.begin, tid, tile.count(), shared.values);
-
-      // Scan the array with carry-in from the partials.
-      if(scan_type == mgpu::scan_type_exc)
-      {
-        local_subtile = scan_t().exclusive_scan(tid, local_subtile, shared.scan, partials_data[cta], tile.count(), op).scan;
-      }
-      else
-      {
-        local_subtile = scan_t().inclusive_scan(tid, local_subtile, shared.scan, partials_data[cta], tile.count(), op).scan;
-      }
-
-      // XXX eliminate this temporary
-      array_t<type_t, vt> temp;
-      sequential_bounded_copy<vt>(local_subtile, temp);
-
-      // Store the scanned values to the output.
-      my_reg_to_mem_thread<nt, vt>(temp, tid, tile.count(), output + tile.begin, shared.values);
+      inclusive_scan(self.inner(), input_tile, output_tile, binary_op, partials_view[group_rank]);
+      //scan_tile<false>(self.inner(), input_tile, output_tile, partials_view[group_rank], binary_op);
+    };
+    agency::bulk_invoke(static_grid<group_size,grain_size>(num_ctas), downsweep_kernel);
+  }
+  else
+  {
+    auto spine_kernel = [=] __device__ (static_grid_agent<small_group_size,small_grain_size>& self)
+    {
+      inclusive_scan(self.inner(), input_view, output_view, binary_op, init);
     };
 
-    agency::bulk_invoke(grid(num_ctas, num_threads), [=] __device__ (grid_agent& self)
-    {
-      downsweep_k(self.inner().index(), self.outer().index());
-    });
-  
-  } else {
-
-    ////////////////////////////////////////////////////////////////////////////
-    // Small input specialization. This is the non-recursive branch.
-
-    typedef launch_params_t<512, 3> spine_params_t;
-    auto spine_k = [=] MGPU_DEVICE(static_grid_agent<512,3>& self)
-    {
-      int tid = self.inner().rank();
-     
-      enum { nt = spine_params_t::nt, vt = spine_params_t::vt, nv = nt * vt };
-      typedef my_cta_scan_t<nt, type_t> scan_t;
-
-      __shared__ union {
-        typename scan_t::storage_t scan;
-        type_t values[nv];
-      } shared;
-
-      // XXX cooperatively call scan
-      //     the implementation is below
-
-      auto view_of_input_tiles  = chunk(input_view, nv);
-      auto view_of_output_tiles = chunk(output_view, nv);
-
-      //auto view_of_shared = span<type_t>(shared.values, nv);
-
-      type_t carry_in = 0;
-      //for(int cur = 0; cur < count; cur += nv)
-      for(int tile = 0; tile < view_of_input_tiles.size(); ++tile)
-      {
-        // Cooperatively load values into register.
-        //int count2 = min<int>(count - cur, nv);
-
-        //auto view_of_current_input_tile = view_of_input_tiles[cur];
-        auto view_of_current_input_tile = view_of_input_tiles[tile];
-
-        // XXX 1. cooperatively copy the tile into shared memory 
-        // copy the current tile into smem
-        auto view_of_shared = span<type_t>(shared.values, view_of_current_input_tile.size());
-        bounded_copy(self.inner(), view_of_current_input_tile, view_of_shared);
-
-        // partition shared memory into subtiles
-        auto view_of_subtile = chunk(view_of_shared, vt)[tid];
-
-        // XXX 2. each thread copies its subtile into a local array
-        // copy subtile into local array
-        array<type_t, vt> local_subtile;
-        sequential_bounded_copy<vt>(chunk(view_of_shared, vt)[tid], local_subtile);
-
-        my_scan_result_t<type_t, vt> result;
-        if(scan_type == mgpu::scan_type_exc)
-        {
-          //result = scan_t().exclusive_scan(tid, temp, shared.scan, carry_in, count2, op);
-          result = scan_t().exclusive_scan(tid, local_subtile, shared.scan, carry_in, view_of_shared.size(), op);
-        }
-        else
-        {
-          //result = scan_t().inclusive_scan(tid, temp, shared.scan, carry_in, count2, op);
-          result = scan_t().inclusive_scan(tid, local_subtile, shared.scan, carry_in, view_of_shared.size(), op);
-        }
-
-        // XXX 4. each thread copies its subtile back into shared memory
-        sequential_bounded_copy<vt>(result.scan, local_subtile);
-
-        sequential_bounded_copy<vt>(local_subtile, chunk(view_of_shared, vt)[tid]);
-
-        // XXX 5. cooperatively copy the tile from shared memory to the result
-        //auto view_of_current_output_tile = view_of_output_tiles[cur];
-        auto view_of_current_output_tile = view_of_output_tiles[tile];
-        bounded_copy(self.inner(), view_of_shared, view_of_current_output_tile);
-
-        //// Store the scanned values back to global memory.
-        //reg_to_mem_thread<nt, vt>(result.scan, tid, count2, output + cur, shared.values);
-        
-        // Roll the reduction into carry_in.
-        carry_in = result.reduction;
-      }
-
-      // Store the carry-out to the reduction pointer. This may be a
-      // discard_iterator_t if no reduction is wanted.
-      if(!tid)
-        *reduction = carry_in;
-    };
-
-    agency::bulk_invoke(static_grid<512,3>(1), spine_k);
+    agency::bulk_invoke(static_grid<small_group_size,small_grain_size>(1), spine_kernel);
   }
 }
 
-template<typename launch_arg_t = empty_t, typename input_it, typename output_it, typename op_t>
-void exclusive_scan(input_it input, int count, output_it output, op_t op, context_t& context)
-{
-  return my_scan_event<mgpu::scan_type_exc, launch_arg_t>(input, count, output, op, discard_iterator_t<typename std::iterator_traits<output_it>::value_type>(), context);
-}
 
-template<typename launch_arg_t = empty_t, typename input_it, typename output_it, typename op_t>
-void inclusive_scan(input_it input, int count, output_it output, op_t op, context_t& context)
+bool validate(size_t n, standard_context_t& context)
 {
-  return my_scan_event<mgpu::scan_type_inc, launch_arg_t>(input, count, output, op, discard_iterator_t<typename std::iterator_traits<output_it>::value_type>(), context);
+  using namespace agency::experimental;
+
+  std::default_random_engine rng(n);
+  std::vector<int> input_host(n);
+  std::generate(input_host.begin(), input_host.end(), rng);
+  
+  int init = rng();
+  
+  // Copy the data to the GPU.
+  mem_t<int> input_device = to_mem(input_host, context);
+  
+  // Call our exclusive scan.
+  mem_t<int> output_device(n, context);
+  inclusive_scan(span<int>(input_device.data(), input_device.size()), span<int>(output_device.data(), output_device.size()), plus_t<int>(), init, context);
+  
+  // Get the result.
+  std::vector<int> output_host = from_mem(output_device);
+  
+  // compare to reference
+  std::vector<int> reference = input_host;
+  if(reference.size() > 0)
+  {
+    reference.front() += init;
+  }
+  
+  std::partial_sum(reference.begin(), reference.end(), reference.begin(), plus_t<int>());
+  
+  if(reference != output_host)
+  {
+    std::cout << "mismatch at n: " << n << std::endl;
+
+    auto mismatch_at = std::mismatch(reference.begin(), reference.end(), output_host.begin()).first - reference.begin();
+
+    std::cout << "mismatch at position " << mismatch_at << std::endl;
+    int group_size = 512;
+    int grain_size = 3;
+    int tile_size = group_size * grain_size;
+
+    int tile = mismatch_at / tile_size;
+    std::cout << "mismatch in tile " << tile << std::endl;
+
+    int thread = tile / grain_size;
+    std::cout << "mismatch in thread " << thread << std::endl;
+  
+    if(n < 100)
+    {
+      for(auto x : output_host)
+      {
+        std::cout << x << " ";
+      }
+      std::cout << std::endl;
+    }
+  
+    return false;
+  }
+
+  return true;
 }
 
 
 int main()
 {
+  using namespace agency::experimental;
+
   standard_context_t context;
 
+  //for(size_t n = 0; n < 100 * 128 * 3; ++n)
+  //{
+  //  assert(validate(n, context));
+  //}
+
+  ////for(int i = 0; i < 10000; ++i)
+  ////{
+  ////  //for(int j = 0; j < 20; ++j)
+  ////  for(int j = 17; j < 20; ++j)
+  ////  //for(int j = 18; j < 20; ++j)
+  ////  {
+  ////    size_t n = 1 << j;
+
+  ////    if(!validate(n, context))
+  ////    {
+  ////      std::cerr << n << " failed on iteration " << i << std::endl;
+
+  ////      assert(0);
+  ////    }
+  ////  }
+  ////}
+
+  //for(size_t i = 0; i < 30; ++i)
+  //{
+  //  assert(validate(1 << i, context));
+  //}
+
   size_t n = 1 << 30;
-  //size_t n = 128 * 11 * 7;
-  //size_t n = 128 * 11 * 1;
+
+  //assert(validate(n, context));
 
   std::vector<int> input_host(n, 1);
-
-  // Copy the data to the GPU.
-  mem_t<int> input_device = to_mem(input_host, context);
-
-  // Call our exclusive scan.
   mem_t<int> output_device(n, context);
-  //exclusive_scan(input_device.data(), input_device.size(), output_device.data(), plus_t<int>(), context);
-  inclusive_scan(input_device.data(), input_device.size(), output_device.data(), plus_t<int>(), context);
 
-  // Get the result.
-  std::vector<int> output_host = from_mem(output_device);
-
-  // compare to reference
-  std::vector<int> reference(n);
-  std::iota(reference.begin(), reference.end(), 1);
-  assert(reference == output_host);
+  mem_t<int> input_device = to_mem(input_host, context);
 
   auto bandwidth = measure_bandwidth_of_invocation_in_gigabytes_per_second(100, 2 * sizeof(int) * n, [&]
   {
-    //exclusive_scan(input_device.data(), input_device.size(), output_device.data(), plus_t<int>(), context);
-    inclusive_scan(input_device.data(), input_device.size(), output_device.data(), plus_t<int>(), context);
+    inclusive_scan(span<int>(input_device.data(), input_device.size()), span<int>(output_device.data(), output_device.size()), plus_t<int>(), 0, context);
   });
 
   std::cout << "Mean bandwidth: " << bandwidth << " GB/s " << std::endl;

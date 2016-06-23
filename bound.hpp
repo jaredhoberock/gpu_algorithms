@@ -7,14 +7,14 @@ struct bounded_executor
 {
   using execution_category = agency::sequential_execution_tag;
 
-  __host__ __device__
+  __AGENCY_ANNOTATION
   constexpr std::size_t shape() const
   {
     return bound;
   }
 
   template<class Function, class Factory>
-  __host__ __device__
+  __AGENCY_ANNOTATION
   void execute(Function f, std::size_t n, Function shared_factory)
   {
     auto shared_parm = shared_factory();
@@ -29,7 +29,7 @@ struct bounded_executor
   }
 
   template<class Function>
-  __host__ __device__
+  __AGENCY_ANNOTATION
   void execute(Function f, std::size_t n)
   {
     for(size_t idx = 0; idx < bound; ++idx)
@@ -66,7 +66,7 @@ class bounded_execution_policy : public agency::detail::basic_execution_policy<
 };
 
 template<size_t b>
-__host__ __device__
+__AGENCY_ANNOTATION
 bounded_execution_policy<b> bound()
 {
   return bounded_execution_policy<b>{};

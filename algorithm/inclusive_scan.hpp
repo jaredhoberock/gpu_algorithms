@@ -2,9 +2,10 @@
 
 #include "../bound.hpp"
 #include "../algorithm.hpp"
+#include "for_loop.hpp"
 
 template<size_t bound, class Range1, class Range2, class BinaryOperation, class T>
-__host__ __device__
+__AGENCY_ANNOTATION
 void inclusive_scan(bounded_execution_policy<bound> policy, Range1&& in, Range2&& out, BinaryOperation binary_op, T init)
 {
   auto input_size = in.size();
@@ -45,7 +46,7 @@ void inclusive_scan(bounded_execution_policy<bound> policy, Range1&& in, Range2&
 }
 
 template<size_t bound, class Range1, class Range2, class BinaryOperation>
-__host__ __device__
+__AGENCY_ANNOTATION
 void inclusive_scan(bounded_execution_policy<bound> policy, Range1&& in, Range2&& out, BinaryOperation binary_op)
 {
   auto input_size = in.size();
@@ -85,9 +86,28 @@ void inclusive_scan(bounded_execution_policy<bound> policy, Range1&& in, Range2&
   }
 }
 
-// XXX integrate this implementation using bounded_for_loop into the implementations above
+
+template<class Range1, class Range2, class BinaryOperation>
+__AGENCY_ANNOTATION
+void inclusive_scan(const Range1& in, Range2&& out, BinaryOperation binary_op)
+{
+  for_loop(in.size(), [&](int i)
+  {
+    if(i == 0)
+    {
+      out[i] = in[i];
+    }
+    else
+    {
+      out[i] = binary_op(in[i], out[i - 1]);
+    }
+  });
+}
+
+
+// XXX eliminate this
 template<size_t bound, class Range1, class Range2, class BinaryOperation>
-__host__ __device__
+__AGENCY_ANNOTATION
 void inclusive_scan(const Range1& in, Range2&& out, BinaryOperation binary_op)
 {
   bounded_for_loop<bound>(in.size(), [&](int i)
@@ -103,9 +123,28 @@ void inclusive_scan(const Range1& in, Range2&& out, BinaryOperation binary_op)
   });
 }
 
-// XXX integrate this implementation using bounded_for_loop into the implementations above
+
+template<class Range1, class Range2, class BinaryOperation, class T>
+__AGENCY_ANNOTATION
+void inclusive_scan(const Range1& in, Range2&& out, BinaryOperation binary_op, T init)
+{
+  for_loop(in.size(), [&](int i)
+  {
+    if(i == 0)
+    {
+      out[i] = binary_op(init, in[i]);
+    }
+    else
+    {
+      out[i] = binary_op(in[i], out[i - 1]);
+    }
+  });
+}
+
+
+// XXX eliminate this
 template<size_t bound, class Range1, class Range2, class BinaryOperation, class T>
-__host__ __device__
+__AGENCY_ANNOTATION
 void inclusive_scan(const Range1& in, Range2&& out, BinaryOperation binary_op, T init)
 {
   bounded_for_loop<bound>(in.size(), [&](int i)
@@ -120,3 +159,4 @@ void inclusive_scan(const Range1& in, Range2&& out, BinaryOperation binary_op, T
     }
   });
 }
+
