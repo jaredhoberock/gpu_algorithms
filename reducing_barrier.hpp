@@ -1,7 +1,7 @@
 #pragma once
 
 #include <agency/experimental/optional.hpp>
-#include <agency/experimental/stride.hpp>
+#include <agency/experimental/ranges/stride.hpp>
 #include <cstddef>
 #include "algorithm.hpp"
 #include "bound.hpp"

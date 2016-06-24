@@ -2,10 +2,7 @@
 
 #include <cstddef>
 #include <agency/execution_agent.hpp>
-#include <agency/experimental/span.hpp>
-#include <agency/experimental/chunk.hpp>
-#include <agency/experimental/zip.hpp>
-#include <agency/experimental/range_traits.hpp>
+#include <agency/experimental/ranges.hpp>
 #include "../algorithm.hpp"
 #include "for_loop.hpp"
 #include "../bound.hpp"

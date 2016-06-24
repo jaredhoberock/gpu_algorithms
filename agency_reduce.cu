@@ -1,11 +1,7 @@
 #include <iostream>
 #include <moderngpu/memory.hxx>      // for mem_t.
 #include <agency/agency.hpp>
-#include <agency/experimental/stride.hpp>
-#include <agency/experimental/span.hpp>
-#include <agency/experimental/array.hpp>
-#include <agency/experimental/optional.hpp>
-#include <agency/experimental/chunk.hpp>
+#include <agency/experimental.hpp>
 #include <agency/cuda.hpp>
 #include "measure_bandwidth_of_invocation.hpp"
 #include "bound.hpp"

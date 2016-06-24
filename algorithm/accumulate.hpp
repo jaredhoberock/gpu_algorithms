@@ -2,7 +2,7 @@
 
 #include <utility>
 #include <type_traits>
-#include <agency/experimental/view.hpp>
+#include <agency/experimental/ranges/range_traits.hpp>
 #include "../algorithm.hpp"
 
 template<class ExecutionPolicy, class Range, class T, class BinaryOperator>

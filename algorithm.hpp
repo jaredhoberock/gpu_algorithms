@@ -1,7 +1,7 @@
 #pragma once
 
 #include <agency/agency.hpp>
-#include <agency/experimental/view.hpp>
+#include <agency/experimental/ranges/range_traits.hpp>
 #include <type_traits>
 #include "collective_ptr.hpp"
 #include "bound.hpp"

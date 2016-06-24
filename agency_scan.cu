@@ -7,9 +7,7 @@
 #include <moderngpu/memory.hxx>      // for mem_t.
 #include <moderngpu/cta_scan.hxx>
 #include <agency/agency.hpp>
-#include <agency/experimental/span.hpp>
-#include <agency/experimental/chunk.hpp>
-#include <agency/experimental/short_vector.hpp>
+#include <agency/experimental.hpp>
 #include <agency/cuda.hpp>
 #include <thrust/copy.h>
 #include <thrust/device_ptr.h>

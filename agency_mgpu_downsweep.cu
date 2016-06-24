@@ -6,7 +6,7 @@
 #include <moderngpu/kernel_scan.hxx>
 #include <agency/agency.hpp>
 #include <agency/cuda.hpp>
-#include <agency/experimental/chunk.hpp>
+#include <agency/experimental.hpp>
 #include "measure_bandwidth_of_invocation.hpp"
 
 
