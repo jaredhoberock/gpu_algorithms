@@ -24,7 +24,7 @@ using enable_if_sequential_t = typename enable_if_sequential<ExecutionPolicy,Res
 
 template<size_t bound, class Range, class Function>
 __host__ __device__
-agency::experimental::detail::decay_range_iterator_t<Range> for_each(bounded_execution_policy<bound> policy, Range&& rng, Function f)
+agency::experimental::range_iterator_t<Range> for_each(bounded_execution_policy<bound> policy, Range&& rng, Function f)
 {
   auto iter = rng.begin();
 
@@ -46,7 +46,7 @@ agency::experimental::detail::decay_range_iterator_t<Range> for_each(bounded_exe
 
 template<class Range, class Function>
 __host__ __device__
-agency::experimental::detail::decay_range_iterator_t<Range>
+agency::experimental::range_iterator_t<Range>
   for_each(agency::sequential_execution_policy, Range&& rng, Function f)
 {
   for(auto i = rng.begin(); i != rng.end(); ++i)
@@ -99,7 +99,7 @@ __host__ __device__
 enable_if_sequential_t<typename std::decay<ExecutionPolicy>::type, T>
   reduce(ExecutionPolicy policy, Range&& rng, T init, BinaryOperator binary_op)
 {
-  using value_type = typename agency::experimental::detail::range_value_t<typename std::decay<Range>::type>;
+  using value_type = typename agency::experimental::range_value_t<Range>;
 
   for_each(policy, std::forward<Range>(rng), [&](value_type& value)
   {
@@ -112,7 +112,7 @@ enable_if_sequential_t<typename std::decay<ExecutionPolicy>::type, T>
 
 template<class ExecutionPolicy, class Range, class BinaryOperator>
 __host__ __device__
-agency::experimental::detail::range_value_t<typename std::decay<Range>::type>
+agency::experimental::range_value_t<Range>
   reduce_nonempty(ExecutionPolicy policy, Range&& rng, BinaryOperator binary_op)
 {
   return reduce(policy, agency::experimental::drop(std::forward<Range>(rng), 1), std::forward<Range>(rng)[0], binary_op);
@@ -121,7 +121,7 @@ agency::experimental::detail::range_value_t<typename std::decay<Range>::type>
 
 template<class ExecutionPolicy, class Range, class BinaryOperator>
 __host__ __device__
-agency::experimental::optional<agency::experimental::detail::range_value_t<typename std::decay<Range>::type>>
+agency::experimental::optional<agency::experimental::range_value_t<Range>>
   uninitialized_reduce(ExecutionPolicy policy, Range&& rng, BinaryOperator binary_op)
 {
   if(!std::forward<Range>(rng).empty())
@@ -135,7 +135,7 @@ agency::experimental::optional<agency::experimental::detail::range_value_t<typen
 
 template<std::size_t group_size, std::size_t grain_size, class Range, class BinaryOperator>
 __host__ __device__
-agency::experimental::detail::range_value_t<typename std::decay<Range>::type>
+agency::experimental::range_value_t<Range>
   uninitialized_reduce(agency::experimental::static_concurrent_agent<group_size, grain_size>& self,
                        Range&& rng,
                        BinaryOperator binary_op)
@@ -151,7 +151,7 @@ agency::experimental::detail::range_value_t<typename std::decay<Range>::type>
   // the entire group cooperatively reduces the partial sums
   int num_partials = rng.size() < group_size ? rng.size() : group_size;
   
-  using T = agency::experimental::detail::range_value_t<typename std::decay<Range>::type>;
+  using T = agency::experimental::range_value_t<Range>;
   using reduce_t = reducing_barrier<T,group_size>;
   auto reducer_ptr = make_collective<reduce_t>(self);
   return reducer_ptr->reduce_and_wait(self, partial_sum, num_partials, binary_op);
@@ -160,7 +160,7 @@ agency::experimental::detail::range_value_t<typename std::decay<Range>::type>
 
 template<std::size_t group_size, std::size_t grain_size, class Range, class BinaryOperator>
 __host__ __device__
-agency::experimental::optional<agency::experimental::detail::range_value_t<typename std::decay<Range>::type>>
+agency::experimental::optional<agency::experimental::range_value_t<Range>>
   uninitialized_reduce_and_elect(agency::experimental::static_concurrent_agent<group_size, grain_size>& self,
                                  Range&& rng,
                                  BinaryOperator binary_op)
@@ -176,7 +176,7 @@ agency::experimental::optional<agency::experimental::detail::range_value_t<typen
   // the entire group cooperatively reduces the partial sums
   int num_partials = rng.size() < group_size ? rng.size() : group_size;
   
-  using T = agency::experimental::detail::range_value_t<typename std::decay<Range>::type>;
+  using T = agency::experimental::range_value_t<Range>;
   using reduce_t = reducing_barrier<T,group_size>;
   auto reducer_ptr = make_collective<reduce_t>(self);
   return reducer_ptr->reduce_and_wait_and_elect(self, partial_sum, num_partials, binary_op);

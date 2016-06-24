@@ -140,7 +140,7 @@ struct warp_reducing_barrier
 // declare this algorithm here so reducing_barrier can call it below
 template<class ExecutionPolicy, class Range, class BinaryOperator>
 __host__ __device__
-agency::experimental::optional<agency::experimental::detail::range_value_t<typename std::decay<Range>::type>>
+agency::experimental::optional<agency::experimental::range_value_t<Range>>
   uninitialized_reduce(ExecutionPolicy policy, Range&& rng, BinaryOperator binary_op);
 
 
