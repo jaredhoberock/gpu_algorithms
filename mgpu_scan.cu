@@ -16,8 +16,6 @@ void my_scan_event(input_it input, int count, output_it output, op_t op, reducti
 {
   typedef typename conditional_typedef_t<launch_arg_t, 
     launch_box_t<
-      arch_20_cta<128, 11>,
-      arch_35_cta<128, 7>,
       arch_52_cta<128, 11>
     >
   >::type_t launch_t;
@@ -163,11 +161,16 @@ void exclusive_scan(input_it input, int count, output_it output, op_t op, contex
 }
 
 
-int main()
+int main(int argc, char** argv)
 {
   standard_context_t context;
 
-  size_t n = 1 << 30;
+  size_t n = 16 << 20;
+
+  if(argc == 2)
+  {
+    n = std::atoi(argv[1]);
+  }
 
   std::vector<int> input_host(n, 1);
 
