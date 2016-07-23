@@ -62,15 +62,21 @@ void inclusive_scan_tiles(input_it1 input, int count, input_it2 inits, output_it
 }
 
 
-int main()
+int main(int argc, char** argv)
 {
   standard_context_t context;
+
+  size_t num_tiles = 1 << 20;
+
+  if(argc > 1)
+  {
+    num_tiles = std::atoi(argv[1]);
+  }
 
   constexpr size_t group_size = 128;
   constexpr size_t grain_size = 11;
   constexpr size_t tile_size = group_size * grain_size;
-  constexpr size_t num_tiles = 1 << 20;
-  constexpr size_t n = tile_size * num_tiles;
+  size_t n = tile_size * num_tiles;
 
   std::vector<int> input_host(n);
   std::default_random_engine rng(n);
@@ -111,6 +117,7 @@ int main()
     inclusive_scan_tiles<group_size,grain_size>(input_device.data(), input_device.size(), inits_device.data(), output_device.data(), plus_t<int>(), context);
   });
 
+  std::cout << "N: " << n << std::endl;
   std::cout << "Mean bandwidth: " << bandwidth << " GB/s " << std::endl;
 
   std::cout << "OK" << std::endl;
