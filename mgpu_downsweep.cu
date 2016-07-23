@@ -45,14 +45,21 @@ void inclusive_scan_tiles(input_it input, int count, output_it output, op_t op, 
 }
 
 
-int main()
+int main(int argc, char** argv)
 {
   standard_context_t context;
 
-  size_t n = 1 << 30;
+  size_t num_tiles = 1 << 20;
+
+  if(argc > 1)
+  {
+    num_tiles = std::atoi(argv[1]);
+  }
+
   constexpr size_t group_size = 128;
   constexpr size_t grain_size = 11;
   constexpr size_t tile_size = group_size * grain_size;
+  size_t n = tile_size * num_tiles;
 
   std::vector<int> input_host(n, 1);
 
@@ -83,6 +90,7 @@ int main()
     context.synchronize();
   });
 
+  std::cout << "N: " << n << std::endl;
   std::cout << "Mean bandwidth: " << bandwidth << " GB/s " << std::endl;
 
   std::cout << "OK" << std::endl;
