@@ -136,7 +136,7 @@ void for_loop(bounded_execution_policy<bound> policy, Size n, Function f)
 
 template<class Size, class Function>
 __AGENCY_ANNOTATION
-void for_loop(agency::sequential_execution_policy, Size n, Function f)
+void for_loop(agency::sequenced_execution_policy, Size n, Function f)
 {
   for(Size i = 0; i < n; ++i)
   {

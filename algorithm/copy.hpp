@@ -1,7 +1,7 @@
 #pragma once
 
 #include <cstddef>
-#include <agency/execution_agent.hpp>
+#include <agency/agency.hpp>
 #include <agency/experimental/ranges.hpp>
 #include "../algorithm.hpp"
 #include "for_loop.hpp"

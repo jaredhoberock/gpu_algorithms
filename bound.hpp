@@ -1,61 +1,52 @@
 #pragma once
 
 #include <agency/agency.hpp>
+#include <utility>
+#include <type_traits>
 
 template<size_t bound>
 struct bounded_executor
 {
-  using execution_category = agency::sequential_execution_tag;
+  using execution_category = agency::sequenced_execution_tag;
 
   __AGENCY_ANNOTATION
-  constexpr std::size_t shape() const
+  constexpr std::size_t unit_shape() const
   {
     return bound;
   }
 
-  template<class Function, class Factory>
+  template<class Function, class ResultFactory, class SharedFactory>
   __AGENCY_ANNOTATION
-  void execute(Function f, std::size_t n, Function shared_factory)
+  typename std::result_of<ResultFactory()>::type
+    bulk_sync_execute(Function f, std::size_t n, ResultFactory result_factory, SharedFactory shared_factory)
   {
-    auto shared_parm = shared_factory();
+    auto result = result_factory();
+    auto shared_arg = shared_factory();
 
     for(size_t idx = 0; idx < bound; ++idx)
     {
       if(idx < n)
       {
-        f(idx, shared_parm);
+        f(idx, result, shared_arg);
       }
     }
-  }
 
-  template<class Function>
-  __AGENCY_ANNOTATION
-  void execute(Function f, std::size_t n)
-  {
-    for(size_t idx = 0; idx < bound; ++idx)
-    {
-      if(idx < n)
-      {
-        f(idx);
-      }
-    }
+    return std::move(result);
   }
 };
 
 
 template<size_t bound_>
-class bounded_execution_policy : public agency::detail::basic_execution_policy<
-  agency::sequential_agent,
+class bounded_execution_policy : public agency::basic_execution_policy<
+  agency::sequenced_agent,
   bounded_executor<bound_>,
-  agency::sequential_execution_tag,
   bounded_execution_policy<bound_>
 >
 {
   private:
-    using super_t = agency::detail::basic_execution_policy<
-      agency::sequential_agent,
+    using super_t = agency::basic_execution_policy<
+      agency::sequenced_agent,
       bounded_executor<bound_>,
-      agency::sequential_execution_tag,
       bounded_execution_policy<bound_>
     >;
 

@@ -8,18 +8,18 @@
 #include "reducing_barrier.hpp"
 
 template<class ExecutionPolicy, class Result = void>
-struct enable_if_sequential
+struct enable_if_sequenced
   : std::enable_if<
       std::is_same<
-        agency::sequential_execution_tag,
-        typename ExecutionPolicy::execution_category
+        agency::sequenced_execution_tag,
+        typename agency::execution_agent_traits<typename ExecutionPolicy::execution_agent_type>::execution_category
       >::value,
       Result
     >
 {};
 
 template<class ExecutionPolicy, class Result = void>
-using enable_if_sequential_t = typename enable_if_sequential<ExecutionPolicy,Result>::type;
+using enable_if_sequenced_t = typename enable_if_sequenced<ExecutionPolicy,Result>::type;
 
 
 template<size_t bound, class Range, class Function>
@@ -30,7 +30,7 @@ agency::experimental::range_iterator_t<Range> for_each(bounded_execution_policy<
 
   bounded_executor<bound> exec;
 
-  exec.execute([&](size_t i)
+  exec.bulk_sync_execute([&](size_t i, int, int)
   {
     if(iter != rng.end())
     {
@@ -38,7 +38,10 @@ agency::experimental::range_iterator_t<Range> for_each(bounded_execution_policy<
       ++iter;
     }
   },
-  bound);
+  bound,
+  []{ return 0; },
+  []{ return 0; }
+  );
 
   return rng.begin();
 }
@@ -47,7 +50,7 @@ agency::experimental::range_iterator_t<Range> for_each(bounded_execution_policy<
 template<class Range, class Function>
 __host__ __device__
 agency::experimental::range_iterator_t<Range>
-  for_each(agency::sequential_execution_policy, Range&& rng, Function f)
+  for_each(agency::sequenced_execution_policy, Range&& rng, Function f)
 {
   for(auto i = rng.begin(); i != rng.end(); ++i)
   {
@@ -83,7 +86,7 @@ OutputIterator copy(bounded_execution_policy<bound> policy, Range&& rng, OutputI
 
 template<class Range, class OutputIterator>
 __host__ __device__
-OutputIterator copy(agency::sequential_execution_policy, Range&& rng, OutputIterator out)
+OutputIterator copy(agency::sequenced_execution_policy, Range&& rng, OutputIterator out)
 {
   for(auto iter = rng.begin(); iter != rng.end(); ++iter, ++out)
   {
@@ -96,7 +99,7 @@ OutputIterator copy(agency::sequential_execution_policy, Range&& rng, OutputIter
 
 template<class ExecutionPolicy, class Range, class T, class BinaryOperator>
 __host__ __device__
-enable_if_sequential_t<typename std::decay<ExecutionPolicy>::type, T>
+enable_if_sequenced_t<typename std::decay<ExecutionPolicy>::type, T>
   reduce(ExecutionPolicy policy, Range&& rng, T init, BinaryOperator binary_op)
 {
   using value_type = typename agency::experimental::range_value_t<Range>;

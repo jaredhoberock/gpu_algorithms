@@ -1,7 +1,7 @@
 #pragma once
 
 #include <type_traits>
-#include <agency/execution_agent.hpp>
+#include <agency/agency.hpp>
 
 template<class T, class CollectiveDeleter>
 class collective_ptr 

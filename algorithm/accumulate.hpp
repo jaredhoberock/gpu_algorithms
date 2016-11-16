@@ -7,7 +7,7 @@
 
 template<class ExecutionPolicy, class Range, class T, class BinaryOperator>
 __host__ __device__
-enable_if_sequential_t<typename std::decay<ExecutionPolicy>::type, T>
+enable_if_sequenced_t<typename std::decay<ExecutionPolicy>::type, T>
   accumulate(ExecutionPolicy policy, Range&& rng, T init, BinaryOperator binary_op)
 {
   using value_type = typename agency::experimental::range_value_t<Range>;
