@@ -5,6 +5,7 @@
 #include <type_traits>
 #include "collective_ptr.hpp"
 #include "bound.hpp"
+#include "unroll.hpp"
 #include "reducing_barrier.hpp"
 
 template<class ExecutionPolicy, class Result = void>
@@ -24,40 +25,46 @@ using enable_if_sequenced_t = typename enable_if_sequenced<ExecutionPolicy,Resul
 
 template<size_t bound, class Range, class Function>
 __host__ __device__
-agency::experimental::range_iterator_t<Range> for_each(bounded_execution_policy<bound> policy, Range&& rng, Function f)
+void for_each(bounded_execution_policy<bound> policy, Range&& rng, Function f)
 {
-  auto iter = rng.begin();
-
   bounded_executor<bound> exec;
 
   exec.bulk_sync_execute([&](size_t i, int, int)
   {
-    if(iter != rng.end())
-    {
-      std::forward<Function>(f)(*iter);
-      ++iter;
-    }
+    std::forward<Function>(f)(rng[i]);
   },
-  bound,
+  rng.size(),
   []{ return 0; },
   []{ return 0; }
   );
+}
 
-  return rng.begin();
+
+template<size_t factor, class Range, class Function>
+__host__ __device__
+void for_each(unrolling_execution_policy<factor> policy, Range&& rng, Function f)
+{
+  unrolling_executor<factor> exec;
+
+  exec.bulk_sync_execute([&](size_t i, int, int)
+  {
+    std::forward<Function>(f)(rng[i]);
+  },
+  rng.size(),
+  []{ return 0; },
+  []{ return 0; }
+  );
 }
 
 
 template<class Range, class Function>
 __host__ __device__
-agency::experimental::range_iterator_t<Range>
-  for_each(agency::sequenced_execution_policy, Range&& rng, Function f)
+void for_each(agency::sequenced_execution_policy, Range&& rng, Function f)
 {
   for(auto i = rng.begin(); i != rng.end(); ++i)
   {
     std::forward<Function>(f)(*i);
   }
-
-  return rng.begin();
 }
 
 
@@ -149,7 +156,7 @@ agency::experimental::range_value_t<Range>
   auto my_values = stride(drop(rng, agent_rank), size_t(group_size));
   
   // ...and sequentially computes a partial sum
-  auto partial_sum = uninitialized_reduce(bound<grain_size>(), my_values, binary_op);
+  auto partial_sum = uninitialized_reduce(unroll<grain_size>(), my_values, binary_op);
   
   // the entire group cooperatively reduces the partial sums
   int num_partials = rng.size() < group_size ? rng.size() : group_size;
