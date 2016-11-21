@@ -150,6 +150,8 @@ agency::experimental::range_value_t<Range>
                        Range&& rng,
                        BinaryOperator binary_op)
 {
+  using namespace agency::experimental;
+
   auto agent_rank = self.rank();
 
   // each agent strides through its group's chunk of the input...
